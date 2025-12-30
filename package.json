@@ -1,6 +1,6 @@
 {
   "name": "@arktechnwa/pfsense-mcp",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "MCP server for pfSense - bidirectional AI control of your firewall",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
