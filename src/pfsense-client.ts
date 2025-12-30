@@ -50,7 +50,7 @@ export class PfSenseClient {
     }
 
     const port = config?.port || parseInt(process.env.PFSENSE_PORT || "443", 10);
-    this.baseUrl = `https://${host}:${port}/api/v1`;
+    this.baseUrl = `https://${host}:${port}/api/v2`;
     this.verifySsl = config?.verifySsl ?? (process.env.PFSENSE_VERIFY_SSL === "true");
 
     // Set up authentication
@@ -61,7 +61,8 @@ export class PfSenseClient {
 
     const apiKey = config?.apiKey || process.env.PFSENSE_API_KEY;
     if (apiKey) {
-      this.headers["Authorization"] = apiKey;
+      // RESTAPI v2 uses X-API-Key header
+      this.headers["X-API-Key"] = apiKey;
     } else {
       const username = config?.username || process.env.PFSENSE_USERNAME;
       const password = config?.password || process.env.PFSENSE_PASSWORD;
@@ -198,8 +199,8 @@ export class PfSenseClient {
    * Used by NEVERHANG health monitor
    */
   async ping(): Promise<void> {
-    // The system/status endpoint is lightweight and always available
-    await this.get("/system/status", 5000);
+    // The status/system endpoint is lightweight and always available
+    await this.get("/status/system", 5000);
   }
 
   /**
@@ -210,79 +211,81 @@ export class PfSenseClient {
   }
 
   // ==========================================================================
-  // SYSTEM ENDPOINTS
+  // SYSTEM ENDPOINTS (v2 API)
   // ==========================================================================
 
   async getSystemStatus(): Promise<ApiResponse<SystemStatus>> {
-    return this.get<SystemStatus>("/system/status");
+    return this.get<SystemStatus>("/status/system");
   }
 
   async getSystemInfo(): Promise<ApiResponse<SystemInfo>> {
-    return this.get<SystemInfo>("/system/info");
+    return this.get<SystemInfo>("/system/version");
   }
 
   // ==========================================================================
-  // INTERFACE ENDPOINTS
+  // INTERFACE ENDPOINTS (v2 API)
   // ==========================================================================
 
   async getInterfaces(): Promise<ApiResponse<InterfaceInfo[]>> {
-    return this.get<InterfaceInfo[]>("/interface");
+    return this.get<InterfaceInfo[]>("/interfaces");
   }
 
   async getInterfaceStatus(iface: string): Promise<ApiResponse<InterfaceStatus>> {
-    return this.get<InterfaceStatus>(`/status/interface?if=${iface}`);
+    // v2 API: get specific interface by ID, then fetch status data
+    return this.get<InterfaceStatus>(`/interface?id=${iface}`);
   }
 
   // ==========================================================================
-  // FIREWALL ENDPOINTS
+  // FIREWALL ENDPOINTS (v2 API)
   // ==========================================================================
 
   async getFirewallRules(): Promise<ApiResponse<FirewallRule[]>> {
-    return this.get<FirewallRule[]>("/firewall/rule");
+    return this.get<FirewallRule[]>("/firewall/rules");
   }
 
   async getFirewallStates(): Promise<ApiResponse<FirewallState[]>> {
-    return this.get<FirewallState[]>("/status/states");
+    return this.get<FirewallState[]>("/firewall/states");
   }
 
   // ==========================================================================
-  // DHCP ENDPOINTS
+  // DHCP ENDPOINTS (v2 API)
   // ==========================================================================
 
   async getDhcpLeases(): Promise<ApiResponse<DhcpLease[]>> {
-    return this.get<DhcpLease[]>("/services/dhcpd/lease");
+    return this.get<DhcpLease[]>("/status/dhcp_server/leases");
   }
 
   // ==========================================================================
-  // GATEWAY ENDPOINTS
+  // GATEWAY ENDPOINTS (v2 API)
   // ==========================================================================
 
   async getGatewayStatus(): Promise<ApiResponse<GatewayStatus[]>> {
-    return this.get<GatewayStatus[]>("/status/gateway");
+    return this.get<GatewayStatus[]>("/status/gateways");
   }
 
   // ==========================================================================
-  // SERVICE ENDPOINTS
+  // SERVICE ENDPOINTS (v2 API)
   // ==========================================================================
 
   async getServices(): Promise<ApiResponse<ServiceStatus[]>> {
-    return this.get<ServiceStatus[]>("/services");
+    return this.get<ServiceStatus[]>("/status/services");
   }
 
   async restartService(service: string): Promise<ApiResponse<void>> {
-    return this.post<void>(`/services/${service}/restart`);
+    return this.post<void>(`/service/${service}/restart`);
   }
 
   // ==========================================================================
-  // DIAGNOSTIC ENDPOINTS
+  // DIAGNOSTIC ENDPOINTS (v2 API)
   // ==========================================================================
 
-  async ping_host(host: string, count: number = 3): Promise<ApiResponse<PingResult>> {
-    return this.get<PingResult>(`/diagnostics/ping?host=${encodeURIComponent(host)}&count=${count}`);
+  async runCommand(command: string): Promise<ApiResponse<CommandResult>> {
+    // Use command_prompt for arbitrary diagnostics (including ping)
+    return this.post<CommandResult>("/diagnostics/command_prompt", { shell_cmd: command });
   }
 
   async arpTable(): Promise<ApiResponse<ArpEntry[]>> {
-    return this.get<ArpEntry[]>("/diagnostics/arp");
+    return this.get<ArpEntry[]>("/diagnostics/arp_table");
   }
 }
 
@@ -404,15 +407,9 @@ export interface ServiceStatus {
   status: "running" | "stopped";
 }
 
-export interface PingResult {
-  host: string;
-  transmitted: number;
-  received: number;
-  loss: number;
-  min: number;
-  avg: number;
-  max: number;
-  stddev: number;
+export interface CommandResult {
+  output: string;
+  return_code?: number;
 }
 
 export interface ArpEntry {

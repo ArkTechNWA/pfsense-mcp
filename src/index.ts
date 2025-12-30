@@ -260,8 +260,12 @@ async function executeToolInner(
       const host = args.host as string;
       if (!host) throw new Error("host parameter required");
       const count = Math.min((args.count as number) || 3, 10);
-      const response = await client.ping_host(host, count);
-      return response.data;
+      // Use command_prompt to run ping (v2 API doesn't have dedicated ping endpoint)
+      const response = await client.runCommand(`ping -c ${count} ${host}`);
+      return {
+        command: `ping -c ${count} ${host}`,
+        output: response.data?.output || "",
+      };
     }
 
     case "pf_diag_arp": {
