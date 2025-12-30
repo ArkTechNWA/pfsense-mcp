@@ -1,0 +1,20 @@
+{
+  "_comment": "Full access: All operations including reboot and config changes",
+  "_warning": "Your firewall, your responsibility",
+  "pfsense": {
+    "host": "192.168.1.1",
+    "port": 443,
+    "api_key_env": "PFSENSE_API_KEY",
+    "verify_ssl": true
+  },
+  "bypass_permissions": true,
+  "neverhang": {
+    "api_timeout": 60000,
+    "connect_timeout": 10000
+  },
+  "fallback": {
+    "enabled": true,
+    "model": "claude-haiku-4-5",
+    "api_key_env": "PFCLAUDE_FALLBACK_KEY"
+  }
+}
