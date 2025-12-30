@@ -1,22 +1,33 @@
-# pfclaude Roadmap
+# pfsense-mcp Roadmap
 
 Two parallel tracks: the MCP server (Claude Code side) and the pfSense package.
 
 ---
 
-## Track A: MCP Server (pfclaude-mcp)
+## Track A: MCP Server (pfsense-mcp)
 
 ### Phase A0: Foundation ✓
 - [x] README.md with full spec
 - [x] ROADMAP.md
-- [ ] LICENSE, package.json, tsconfig
+- [x] LICENSE, package.json, tsconfig
 - [ ] Example configs
+- [ ] CI workflow (GitHub Actions)
 
-### Phase A1: Core API Client
+### Phase A1: Core Infrastructure
 - [ ] pfSense API client
 - [ ] Authentication (API key, HTTPS)
 - [ ] Basic connectivity test
-- [ ] NEVERHANG timeouts
+- [ ] NEVERHANG v2.0 integration
+  - [ ] Circuit breaker pattern
+  - [ ] Adaptive timeouts
+  - [ ] Health monitoring
+  - [ ] Graceful degradation
+- [ ] A.L.A.N. persistence layer
+  - [ ] SQLite schema (better-sqlite3)
+  - [ ] Query complexity classification
+  - [ ] Performance tracking
+  - [ ] Health trend analysis
+  - [ ] Stats in `pf_health` tool
 
 ### Phase A2: Read Operations
 - [ ] System info/status
@@ -48,6 +59,64 @@ Two parallel tracks: the MCP server (Claude Code side) and the pfSense package.
 - [ ] Comprehensive error handling
 - [ ] Test suite
 - [ ] npm publish
+
+---
+
+## NEVERHANG v2.0
+
+Battle-tested reliability infrastructure ported from systemd-mcp and postgres-mcp.
+
+### Circuit Breaker
+- **CLOSED**: Normal operation
+- **OPEN**: Failures exceeded threshold, fast-fail for recovery period
+- **HALF_OPEN**: Testing if service recovered
+
+### Adaptive Timeouts
+- Learns from query patterns
+- Adjusts timeouts based on complexity
+- Tracks latency percentiles (p50, p95, p99)
+
+### Health Monitoring
+- Periodic health probes
+- Degradation detection
+- Recovery detection
+- Health trend in stats
+
+---
+
+## A.L.A.N. (As Long As Necessary)
+
+Persistent learning layer for NEVERHANG. SQLite-backed metrics that survive restarts.
+
+### Database Schema
+```sql
+CREATE TABLE query_metrics (
+  id INTEGER PRIMARY KEY,
+  tool_name TEXT NOT NULL,
+  complexity TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  success INTEGER NOT NULL,
+  error_type TEXT,
+  query_preview TEXT,
+  timestamp INTEGER NOT NULL
+);
+```
+
+### Query Complexity Classification
+| Complexity | Pattern |
+|------------|---------|
+| `simple` | Basic reads, status checks |
+| `interface` | Interface operations |
+| `firewall` | Firewall rule operations |
+| `config` | Configuration changes |
+| `dangerous` | Reboot, shutdown, packages |
+
+### Integration Points
+- `pf_health` tool includes A.L.A.N. stats
+- 24-hour rolling metrics
+- Success rate tracking
+- Latency by complexity
+- Health trend analysis
 
 ---
 
@@ -135,14 +204,15 @@ Two parallel tracks: the MCP server (Claude Code side) and the pfSense package.
 
 ## Version Targets
 
-### MCP Server (@arktechnwa/pfclaude-mcp)
+### MCP Server (@arktechnwa/pfsense-mcp)
 
 | Version | Phase | Description |
 |---------|-------|-------------|
-| 0.1.0 | A1-A2 | Read-only operations |
-| 0.2.0 | A3 | Service control |
-| 0.3.0 | A4 | Configuration |
-| 0.4.0 | A5 | Dangerous operations |
+| 0.1.0 | A1 | Core infrastructure + NEVERHANG + A.L.A.N. |
+| 0.2.0 | A2 | Read-only operations |
+| 0.3.0 | A3 | Service control |
+| 0.4.0 | A4 | Configuration |
+| 0.5.0 | A5 | Dangerous operations |
 | 1.0.0 | A6 | Production release |
 
 ### pfSense Package
@@ -162,6 +232,6 @@ Two parallel tracks: the MCP server (Claude Code side) and the pfSense package.
 
 ## Current Focus
 
-**Phase A0 + B0** — Foundation and scaffolding.
+**Phase A0 → A1** — Foundation, CI, and core infrastructure with NEVERHANG + A.L.A.N.
 
 This is the most ambitious project in the toolshed. Two codebases, two languages (TypeScript + PHP), two deployment targets. But also the most interesting.

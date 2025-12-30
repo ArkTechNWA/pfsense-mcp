@@ -1,4 +1,6 @@
-# pfclaude
+# pfsense-mcp
+
+[![CI](https://github.com/ArktechNWA/pfsense-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ArktechNWA/pfsense-mcp/actions/workflows/ci.yml)
 
 A bidirectional AI agent for pfSense. Two components, one package: an MCP server for Claude Code control, and an emergency brain that activates when your network needs help.
 
@@ -37,7 +39,7 @@ pfclaude solves both problems:
 ┌─────────────────────────────────────────────────────────────────┐
 │ Claude Code (workstation)                                       │
 │ ┌─────────────────────────────────────────────────────────────┐ │
-│ │ pfclaude-mcp                                                │ │
+│ │ pfsense-mcp                                                 │ │
 │ │  - Full pfSense API passthrough                             │ │
 │ │  - All operations: firewall, NAT, DHCP, VPN, logs, etc.     │ │
 │ │  - Authenticated over HTTPS                                 │ │
@@ -649,13 +651,13 @@ System > Package Manager > Available Packages > pfClaude
 
 Or manual:
 ```bash
-pkg add https://github.com/ArktechNWA/pfclaude/releases/latest/pfclaude.pkg
+pkg add https://github.com/ArktechNWA/pfsense-mcp/releases/latest/pfsense.pkg
 ```
 
 ### MCP Server (Claude Code side)
 
 ```bash
-npm install -g @arktechnwa/pfclaude-mcp
+npm install -g @arktechnwa/pfsense-mcp
 ```
 
 ### Claude Code Integration
@@ -663,8 +665,8 @@ npm install -g @arktechnwa/pfclaude-mcp
 ```json
 {
   "mcpServers": {
-    "pfclaude": {
-      "command": "pfclaude-mcp",
+    "pfsense": {
+      "command": "pfsense-mcp",
       "env": {
         "PFSENSE_HOST": "192.168.1.1",
         "PFSENSE_API_KEY": "your-api-key"
