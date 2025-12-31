@@ -22,6 +22,10 @@ const transporter = nodemailer.createTransport({
   port: SMTP_PORT,
   secure: SMTP_PORT === 465,
   auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
+  tls: {
+    // Bluehost certs can be finicky
+    rejectUnauthorized: false,
+  },
 });
 
 /**
