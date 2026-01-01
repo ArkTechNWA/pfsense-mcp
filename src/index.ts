@@ -123,27 +123,33 @@ async function executeToolInner(
 
     case "pf_system_status": {
       const response = await client.getSystemStatus();
-      const data = response.data;
+      const data = response.data as unknown as Record<string, unknown>;
       if (!data) return { error: "No data returned" };
 
+      // Handle varying API response structures defensively
+      const cpu = data.cpu as Record<string, unknown> | undefined;
+      const memory = data.memory as Record<string, unknown> | undefined;
+      const disk = data.disk as Record<string, unknown> | undefined;
+
       return {
-        uptime_seconds: data.uptime,
-        uptime_human: formatUptime(data.uptime),
-        datetime: data.datetime,
-        cpu: {
-          usage_percent: data.cpu.usage,
-          temperature_c: data.cpu.temperature,
-        },
-        memory: {
-          total_mb: Math.round(data.memory.total / 1024 / 1024),
-          used_mb: Math.round(data.memory.used / 1024 / 1024),
-          usage_percent: data.memory.usage,
-        },
-        disk: {
-          total_gb: Math.round(data.disk.total / 1024 / 1024 / 1024),
-          used_gb: Math.round(data.disk.used / 1024 / 1024 / 1024),
-          usage_percent: data.disk.usage,
-        },
+        uptime_seconds: data.uptime ?? null,
+        uptime_human: typeof data.uptime === "number" ? formatUptime(data.uptime) : null,
+        datetime: data.datetime ?? null,
+        cpu: cpu ? {
+          usage_percent: cpu.usage ?? null,
+          temperature_c: cpu.temperature ?? null,
+        } : null,
+        memory: memory ? {
+          total_mb: typeof memory.total === "number" ? Math.round(memory.total / 1024 / 1024) : null,
+          used_mb: typeof memory.used === "number" ? Math.round(memory.used / 1024 / 1024) : null,
+          usage_percent: memory.usage ?? null,
+        } : null,
+        disk: disk ? {
+          total_gb: typeof disk.total === "number" ? Math.round(disk.total / 1024 / 1024 / 1024) : null,
+          used_gb: typeof disk.used === "number" ? Math.round(disk.used / 1024 / 1024 / 1024) : null,
+          usage_percent: disk.usage ?? null,
+        } : null,
+        _raw_keys: Object.keys(data),  // Debug: show what fields API actually returns
       };
     }
 

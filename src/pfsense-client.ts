@@ -231,8 +231,8 @@ export class PfSenseClient {
   }
 
   async getInterfaceStatus(iface: string): Promise<ApiResponse<InterfaceStatus>> {
-    // v2 API: get specific interface by ID, then fetch status data
-    return this.get<InterfaceStatus>(`/interface?id=${iface}`);
+    // v2 API: get specific interface by path parameter
+    return this.get<InterfaceStatus>(`/interface/${iface}`);
   }
 
   // ==========================================================================
@@ -289,7 +289,7 @@ export class PfSenseClient {
 
   async runCommand(command: string): Promise<ApiResponse<CommandResult>> {
     // Use command_prompt for arbitrary diagnostics (including ping)
-    return this.post<CommandResult>("/diagnostics/command_prompt", { shell_cmd: command });
+    return this.post<CommandResult>("/diagnostics/command_prompt", { command });
   }
 
   async arpTable(): Promise<ApiResponse<ArpEntry[]>> {
