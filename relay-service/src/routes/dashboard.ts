@@ -375,6 +375,11 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
 
     /* Awaiting data */
     .awaiting { color: #666; font-style: italic; }
+
+    /* Sparklines */
+    .sparkline { width: 100%; height: 24px; margin-top: 4px; }
+    .sparkline path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .sparkline .area { stroke: none; opacity: 0.15; }
   </style>
 </head>
 <body>
@@ -460,6 +465,25 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       return m + ':' + String(s).padStart(2, '0');
     }
 
+    function renderSparkline(data, color) {
+      if (!data || data.length < 2) return '';
+      const w = 100, h = 24, pad = 2;
+      const max = Math.max(...data, 1);
+      const min = Math.min(...data, 0);
+      const range = max - min || 1;
+      const stepX = (w - pad * 2) / (data.length - 1);
+      const points = data.map((v, i) => {
+        const x = pad + i * stepX;
+        const y = h - pad - ((v - min) / range) * (h - pad * 2);
+        return x + ',' + y;
+      }).join(' ');
+      const areaPoints = points + ' ' + (w - pad) + ',' + (h - pad) + ' ' + pad + ',' + (h - pad);
+      return '<svg class="sparkline" viewBox="0 0 ' + w + ' ' + h + '">' +
+        '<path class="area" d="M' + areaPoints + 'Z" fill="' + color + '"/>' +
+        '<path d="M' + points + '" stroke="' + color + '"/>' +
+      '</svg>';
+    }
+
     function formatTimeSince(ts) {
       const diff = Date.now() - ts;
       const mins = Math.floor(diff / 60000);
@@ -473,6 +497,21 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
 
     function gaugeClass(pct) {
       return pct > 80 ? 'metric-bad' : pct > 50 ? 'metric-warn' : 'metric-good';
+    }
+
+    function gaugeColor(pct) {
+      return pct > 80 ? '#ff4444' : pct > 50 ? '#ffaa00' : '#00ff88';
+    }
+
+    function extractHistory(history, type) {
+      if (!history || !history.length) return [];
+      return history.slice().reverse().map(h => {
+        const sys = h.metrics?.system || {};
+        if (type === 'cpu') return sys.cpu?.usage_percent || 0;
+        if (type === 'memory') return sys.memory?.usage_percent || 0;
+        if (type === 'disk') return sys.disk?.usage_percent || 0;
+        return 0;
+      }).slice(-30);
     }
 
     function updateCountdown() {
@@ -519,9 +558,21 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
                 '</div>' +
                 (d.metrics ? (
                   '<div class="metrics-grid">' +
-                    '<div class="metric-card"><div class="metric-value ' + gaugeClass(cpuPct) + '">' + Math.round(cpuPct) + '%</div><div class="metric-label">CPU</div></div>' +
-                    '<div class="metric-card"><div class="metric-value ' + gaugeClass(memPct) + '">' + Math.round(memPct) + '%</div><div class="metric-label">Memory</div></div>' +
-                    '<div class="metric-card"><div class="metric-value ' + gaugeClass(diskPct) + '">' + Math.round(diskPct) + '%</div><div class="metric-label">Disk</div></div>' +
+                    '<div class="metric-card">' +
+                      '<div class="metric-value ' + gaugeClass(cpuPct) + '">' + Math.round(cpuPct) + '%</div>' +
+                      '<div class="metric-label">CPU</div>' +
+                      renderSparkline(extractHistory(d.metricsHistory, 'cpu'), gaugeColor(cpuPct)) +
+                    '</div>' +
+                    '<div class="metric-card">' +
+                      '<div class="metric-value ' + gaugeClass(memPct) + '">' + Math.round(memPct) + '%</div>' +
+                      '<div class="metric-label">Memory</div>' +
+                      renderSparkline(extractHistory(d.metricsHistory, 'memory'), gaugeColor(memPct)) +
+                    '</div>' +
+                    '<div class="metric-card">' +
+                      '<div class="metric-value ' + gaugeClass(diskPct) + '">' + Math.round(diskPct) + '%</div>' +
+                      '<div class="metric-label">Disk</div>' +
+                      renderSparkline(extractHistory(d.metricsHistory, 'disk'), gaugeColor(diskPct)) +
+                    '</div>' +
                   '</div>' +
                   '<div class="status-row">' +
                     '<div class="status-card">' +
