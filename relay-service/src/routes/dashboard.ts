@@ -725,6 +725,8 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       }
     }
 
+    // Fetch immediately on load, then every 5 minutes
+    fetchStatus();
     setInterval(updateCountdown, 1000);
   </script>
 </body>
