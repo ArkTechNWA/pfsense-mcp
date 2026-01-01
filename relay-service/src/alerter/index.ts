@@ -22,10 +22,6 @@ const transporter = nodemailer.createTransport({
   port: SMTP_PORT,
   secure: SMTP_PORT === 465,
   auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
-  tls: {
-    // Bluehost certs can be finicky
-    rejectUnauthorized: false,
-  },
 });
 
 /**
@@ -273,4 +269,25 @@ export async function verifySmtp(): Promise<boolean> {
     console.error("[Alerter] SMTP verification failed:", error);
     return false;
   }
+}
+
+// Magic link for dashboard login
+export async function sendMagicLink(email: string, loginUrl: string, durationLabel?: string): Promise<void> {
+  const sessionInfo = durationLabel ? `Session will last ${durationLabel}.` : "Session will last 1 day.";
+
+  const mailOptions = {
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: email,
+    subject: 'pfSense Guardian - Login Link',
+    text: `Click here to log in to your Guardian dashboard:\n\n${loginUrl}\n\nThis link expires in 1 hour. ${sessionInfo}\n\nIf you didn't request this, ignore this email.`,
+    html: `
+      <h2>pfSense Guardian Login</h2>
+      <p>Click the link below to access your dashboard:</p>
+      <p><a href="${loginUrl}" style="display:inline-block;background:#00d9ff;color:#000;padding:12px 24px;border-radius:4px;text-decoration:none;font-weight:bold;">Log In</a></p>
+      <p style="color:#888;font-size:0.9em;">This link expires in 1 hour. ${sessionInfo}</p>
+      <p style="color:#888;font-size:0.9em;">If you didn't request this, ignore this email.</p>
+    `
+  };
+
+  await transporter.sendMail(mailOptions);
 }

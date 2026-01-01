@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<pfsensepkgs>
+	<package>
+		<name>pfSense Guardian</name>
+		<internal_name>Guardian</internal_name>
+		<descr><![CDATA[AI-powered emergency monitoring. Alerts you when your firewall needs attention and uses Claude AI to diagnose issues.]]></descr>
+		<version>%%PKGVERSION%%</version>
+		<configurationfile>pfsense-guardian.xml</configurationfile>
+	</package>
+</pfsensepkgs>

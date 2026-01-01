@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<packagegui>
+  <name>pfSense-Guardian</name>
+  <title>Services/pfSense Guardian</title>
+  <version>0.1.0</version>
+  <include_file>/usr/local/pkg/pfsense-guardian.inc</include_file>
+  <menu>
+    <name>pfSense Guardian</name>
+    <section>Services</section>
+    <url>/pkg_edit.php?xml=pfsense-guardian.xml</url>
+  </menu>
+  <service>
+    <name>guardian</name>
+    <rcfile>pfsense-guardian.sh</rcfile>
+    <executable>pfsense-guardian</executable>
+    <description>AI-powered emergency monitoring</description>
+  </service>
+  <configpath>installedpackages->pfsenseguardian->config</configpath>
+  <additional_files_needed>
+    <item>https://pfsense-mcp.arktechnwa.com/repo/files/pfsense-guardian.inc</item>
+    <prefix>/usr/local/pkg/</prefix>
+  </additional_files_needed>
+  <fields>
+    <field>
+      <type>listtopic</type>
+      <name>Guardian Configuration</name>
+    </field>
+    <field>
+      <fielddescr>Enable Guardian</fielddescr>
+      <fieldname>enable</fieldname>
+      <type>checkbox</type>
+      <description>Enable AI-powered emergency monitoring</description>
+    </field>
+    <field>
+      <fielddescr>Email Address</fielddescr>
+      <fieldname>email</fieldname>
+      <type>input</type>
+      <size>50</size>
+      <description>Alerts will be sent to this email address</description>
+      <required/>
+    </field>
+    <field>
+      <fielddescr>Anthropic API Key</fielddescr>
+      <fieldname>apikey</fieldname>
+      <type>password</type>
+      <size>80</size>
+      <description>Your Anthropic API key (starts with sk-ant-). Get one at console.anthropic.com</description>
+      <required/>
+    </field>
+    <field>
+      <type>listtopic</type>
+      <name>Alert Thresholds</name>
+    </field>
+    <field>
+      <fielddescr>CPU Threshold (%)</fielddescr>
+      <fieldname>cpu_threshold</fieldname>
+      <type>input</type>
+      <size>5</size>
+      <default_value>90</default_value>
+      <description>Alert when CPU usage exceeds this percentage</description>
+    </field>
+    <field>
+      <fielddescr>Memory Threshold (%)</fielddescr>
+      <fieldname>mem_threshold</fieldname>
+      <type>input</type>
+      <size>5</size>
+      <default_value>90</default_value>
+      <description>Alert when memory usage exceeds this percentage</description>
+    </field>
+    <field>
+      <fielddescr>Disk Threshold (%)</fielddescr>
+      <fieldname>disk_threshold</fieldname>
+      <type>input</type>
+      <size>5</size>
+      <default_value>90</default_value>
+      <description>Alert when disk usage exceeds this percentage</description>
+    </field>
+    <field>
+      <fielddescr>Check Interval (minutes)</fielddescr>
+      <fieldname>interval</fieldname>
+      <type>select</type>
+      <default_value>5</default_value>
+      <options>
+        <option><name>1 minute</name><value>1</value></option>
+        <option><name>5 minutes</name><value>5</value></option>
+        <option><name>15 minutes</name><value>15</value></option>
+        <option><name>30 minutes</name><value>30</value></option>
+      </options>
+      <description>How often to check system health</description>
+    </field>
+    <field>
+      <type>listtopic</type>
+      <name>Status</name>
+    </field>
+    <field>
+      <fielddescr>Device Token</fielddescr>
+      <fieldname>device_token</fieldname>
+      <type>info</type>
+      <description>Your unique device identifier (auto-generated)</description>
+    </field>
+    <field>
+      <fielddescr>Last Check</fielddescr>
+      <fieldname>last_check</fieldname>
+      <type>info</type>
+      <description>Last health check timestamp</description>
+    </field>
+  </fields>
+  <custom_php_install_command>
+    pfsense_guardian_install();
+  </custom_php_install_command>
+  <custom_php_deinstall_command>
+    pfsense_guardian_deinstall();
+  </custom_php_deinstall_command>
+  <custom_php_resync_config_command>
+    pfsense_guardian_resync();
+  </custom_php_resync_config_command>
+</packagegui>
