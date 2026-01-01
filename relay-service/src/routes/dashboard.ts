@@ -345,41 +345,72 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
     .refresh-status { color: #666; font-size: 0.85em; text-align: right; margin-bottom: 20px; }
     .refresh-status .live { color: #00ff88; }
 
-    /* Device cards */
-    .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }
-    .device-card { background: #16213e; border-radius: 8px; padding: 20px; }
-    .device-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-    .device-name { font-size: 1.3em; color: #00d9ff; }
+    /* Device cartouches - full width, stacked vertically */
+    .device-stack { display: flex; flex-direction: column; gap: 20px; }
+    .device-cartouche { background: #16213e; border-radius: 12px; padding: 20px; width: 100%; }
+    .cartouche-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #333; }
+    .device-name { font-size: 1.4em; color: #00d9ff; font-weight: 600; }
     .device-seen { font-size: 0.85em; color: #666; }
 
-    /* Metrics grid */
-    .metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 15px; }
-    .metric-card { background: #0f3460; border-radius: 6px; padding: 12px; text-align: center; }
-    .metric-value { font-size: 1.8em; font-weight: bold; }
-    .metric-label { font-size: 0.75em; color: #888; margin-top: 4px; }
+    /* 5-card inline layout */
+    .cartouche-cards { display: flex; gap: 15px; flex-wrap: nowrap; }
+    .cartouche-card { background: #0f3460; border-radius: 8px; padding: 16px; flex: 1; min-width: 0; }
+    .cartouche-card.system-card { flex: 1.5; } /* System card slightly wider for 3 bars */
+    .card-title { font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+
+    /* NEVERHANG card */
+    .circuit-tag { display: inline-block; padding: 4px 12px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+    .circuit-tag.closed { background: rgba(0, 255, 136, 0.2); color: #00ff88; }
+    .circuit-tag.open { background: rgba(255, 68, 68, 0.2); color: #ff4444; }
+    .circuit-tag.half_open { background: rgba(255, 170, 0, 0.2); color: #ffaa00; }
+    .nev-stats { font-size: 0.8em; color: #666; margin-top: 10px; }
+
+    /* A.L.A.N. card */
+    .alan-big { font-size: 2.2em; font-weight: bold; color: #00d9ff; }
+    .alan-label { font-size: 0.75em; color: #888; }
+    .alan-stats { font-size: 0.8em; color: #666; margin-top: 8px; }
+
+    /* SYSTEM card - progress bars with gradients */
+    .system-bars { display: flex; flex-direction: column; gap: 12px; }
+    .bar-row { }
+    .bar-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .bar-label { font-size: 0.75em; color: #888; }
+    .bar-value { font-size: 0.85em; font-weight: bold; }
+    .bar-track { height: 8px; background: #1a1a2e; border-radius: 4px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #00ff88 0%, #00d9ff 100%); transition: width 0.3s ease; }
+    .bar-histogram { height: 28px; margin-top: 4px; }
+    .bar-histogram svg { width: 100%; height: 100%; }
+
+    /* Value-based bar colors */
+    .bar-fill.good { background: linear-gradient(90deg, #00ff88 0%, #00d9ff 100%); }
+    .bar-fill.warn { background: linear-gradient(90deg, #ffaa00 0%, #ff6600 100%); }
+    .bar-fill.bad { background: linear-gradient(90deg, #ff4444 0%, #cc0000 100%); }
+
+    /* GATEWAY card */
+    .gateway-stat { margin-bottom: 10px; }
+    .gateway-value { font-size: 1.4em; font-weight: bold; }
+    .gateway-label { font-size: 0.7em; color: #888; }
+    .gateway-good { color: #00ff88; }
+    .gateway-warn { color: #ffaa00; }
+    .gateway-bad { color: #ff4444; }
+
+    /* CONTROLS card */
+    .control-btn { display: block; width: 100%; padding: 8px 12px; margin-bottom: 8px; background: #1a1a2e; border: 1px solid #333; border-radius: 4px; color: #00d9ff; cursor: pointer; font-size: 0.85em; transition: all 0.2s; }
+    .control-btn:hover { background: #00d9ff; color: #000; }
+    .control-btn:last-child { margin-bottom: 0; }
+
+    /* Legacy metric classes for compatibility */
     .metric-good { color: #00ff88; }
     .metric-warn { color: #ffaa00; }
     .metric-bad { color: #ff4444; }
 
-    /* Status cards */
-    .status-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 15px; }
-    .status-card { background: #0f3460; border-radius: 6px; padding: 12px; }
-    .status-title { font-size: 0.8em; color: #888; margin-bottom: 8px; }
-    .status-main { font-size: 1.2em; }
-    .status-detail { font-size: 0.75em; color: #666; margin-top: 4px; }
-
-    /* Circuit states */
-    .circuit-closed { color: #00ff88; }
-    .circuit-open { color: #ff4444; }
-    .circuit-half_open { color: #ffaa00; }
-
     /* Awaiting data */
-    .awaiting { color: #666; font-style: italic; }
+    .awaiting { color: #666; font-style: italic; text-align: center; padding: 40px; }
 
-    /* Sparklines */
-    .sparkline { width: 100%; height: 24px; margin-top: 4px; }
-    .sparkline path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-    .sparkline .area { stroke: none; opacity: 0.15; }
+    /* Sparklines / Histograms */
+    .sparkline, .histogram { width: 100%; height: 24px; }
+    .sparkline path, .histogram path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .sparkline .area, .histogram .area { stroke: none; opacity: 0.3; }
   </style>
 </head>
 <body>
@@ -392,52 +423,94 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       Next refresh in <span id=countdown>5:00</span>
     </p>
 
-    <div class="device-grid" id="deviceGrid">
+    <div class="device-stack" id="deviceStack">
       ${deviceMetrics.length === 0 ? '<p class="awaiting">No devices registered. <a href="/register">Register a device</a></p>' :
         deviceMetrics.map((d: any) => {
           const m = d.metrics || {};
           const sys = m.system || {};
           const nev = m.neverhang || {};
           const alan = m.alan || {};
+          const gw = m.gateway || {};
           const cpuPct = sys.cpu?.usage_percent || 0;
           const memPct = sys.memory?.usage_percent || 0;
           const diskPct = sys.disk?.usage_percent || 0;
-          const gaugeClass = (pct: number) => pct > 80 ? 'metric-bad' : pct > 50 ? 'metric-warn' : 'metric-good';
+          const barClass = (pct: number) => pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
           const lastSeen = d.last_seen_at ? formatTimeSince(d.last_seen_at) : 'never';
+          const successRate = Math.round((alan.success_rate_24h || 1) * 100);
 
           return `
-          <div class="device-card" data-token="${d.token}">
-            <div class="device-header">
+          <div class="device-cartouche" data-token="${d.token}">
+            <div class="cartouche-header">
               <span class="device-name">${d.name}</span>
               <span class="device-seen">Last seen: ${lastSeen}</span>
             </div>
 
             ${d.metrics ? `
-            <div class="metrics-grid">
-              <div class="metric-card">
-                <div class="metric-value ${gaugeClass(cpuPct)}">${Math.round(cpuPct)}%</div>
-                <div class="metric-label">CPU</div>
+            <div class="cartouche-cards">
+              <!-- NEVERHANG -->
+              <div class="cartouche-card neverhang-card">
+                <div class="card-title">NEVERHANG</div>
+                <span class="circuit-tag ${nev.circuit || 'closed'}">${(nev.circuit || 'closed').toUpperCase()}</span>
+                <div class="nev-stats">${nev.failures || 0} failures<br>${nev.recoveries || 0} recoveries</div>
               </div>
-              <div class="metric-card">
-                <div class="metric-value ${gaugeClass(memPct)}">${Math.round(memPct)}%</div>
-                <div class="metric-label">Memory</div>
-              </div>
-              <div class="metric-card">
-                <div class="metric-value ${gaugeClass(diskPct)}">${Math.round(diskPct)}%</div>
-                <div class="metric-label">Disk</div>
-              </div>
-            </div>
 
-            <div class="status-row">
-              <div class="status-card">
-                <div class="status-title">NEVERHANG</div>
-                <div class="status-main circuit-${nev.circuit || 'closed'}">${(nev.circuit || 'closed').toUpperCase()}</div>
-                <div class="status-detail">${nev.failures || 0} failures • ${nev.recoveries || 0} recoveries</div>
+              <!-- A.L.A.N. -->
+              <div class="cartouche-card alan-card">
+                <div class="card-title">A.L.A.N.</div>
+                <div class="alan-big">${successRate}%</div>
+                <div class="alan-label">success rate</div>
+                <div class="alan-stats">${alan.queries_24h || 0} queries (24h)</div>
               </div>
-              <div class="status-card">
-                <div class="status-title">A.L.A.N.</div>
-                <div class="status-main">${alan.queries_24h || 0} queries</div>
-                <div class="status-detail">${Math.round((alan.success_rate_24h || 1) * 100)}% success rate</div>
+
+              <!-- SYSTEM -->
+              <div class="cartouche-card system-card">
+                <div class="card-title">System</div>
+                <div class="system-bars">
+                  <div class="bar-row" data-metric="cpu">
+                    <div class="bar-header">
+                      <span class="bar-label">CPU</span>
+                      <span class="bar-value ${barClass(cpuPct)}">${Math.round(cpuPct)}%</span>
+                    </div>
+                    <div class="bar-track"><div class="bar-fill ${barClass(cpuPct)}" style="width: ${cpuPct}%"></div></div>
+                    <div class="bar-histogram" data-type="cpu"></div>
+                  </div>
+                  <div class="bar-row" data-metric="memory">
+                    <div class="bar-header">
+                      <span class="bar-label">Memory</span>
+                      <span class="bar-value ${barClass(memPct)}">${Math.round(memPct)}%</span>
+                    </div>
+                    <div class="bar-track"><div class="bar-fill ${barClass(memPct)}" style="width: ${memPct}%"></div></div>
+                    <div class="bar-histogram" data-type="memory"></div>
+                  </div>
+                  <div class="bar-row" data-metric="disk">
+                    <div class="bar-header">
+                      <span class="bar-label">Disk</span>
+                      <span class="bar-value ${barClass(diskPct)}">${Math.round(diskPct)}%</span>
+                    </div>
+                    <div class="bar-track"><div class="bar-fill ${barClass(diskPct)}" style="width: ${diskPct}%"></div></div>
+                    <div class="bar-histogram" data-type="disk"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- GATEWAY -->
+              <div class="cartouche-card gateway-card">
+                <div class="card-title">Gateway</div>
+                <div class="gateway-stat">
+                  <div class="gateway-value gateway-good">${gw.latency_ms || '--'}ms</div>
+                  <div class="gateway-label">Latency</div>
+                </div>
+                <div class="gateway-stat">
+                  <div class="gateway-value gateway-good">${gw.packet_loss || 0}%</div>
+                  <div class="gateway-label">Packet Loss</div>
+                </div>
+              </div>
+
+              <!-- CONTROLS -->
+              <div class="cartouche-card controls-card">
+                <div class="card-title">Controls</div>
+                <button class="control-btn" data-action="ping">Ping WAN</button>
+                <button class="control-btn" data-action="diag">Diagnose</button>
               </div>
             </div>
             ` : '<p class="awaiting">Awaiting metrics...</p>'}
@@ -481,6 +554,33 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       return '<svg class="sparkline" viewBox="0 0 ' + w + ' ' + h + '">' +
         '<path class="area" d="M' + areaPoints + 'Z" fill="' + color + '"/>' +
         '<path d="M' + points + '" stroke="' + color + '"/>' +
+      '</svg>';
+    }
+
+    // Histogram for SYSTEM bars - uses gradient colors
+    function renderHistogram(data, barState) {
+      if (!data || data.length < 2) return '';
+      const w = 100, h = 28, pad = 2;
+      const max = Math.max(...data, 1);
+      const min = Math.min(...data, 0);
+      const range = max - min || 1;
+      const stepX = (w - pad * 2) / (data.length - 1);
+      const points = data.map((v, i) => {
+        const x = pad + i * stepX;
+        const y = h - pad - ((v - min) / range) * (h - pad * 2);
+        return x + ',' + y;
+      }).join(' ');
+      const areaPoints = points + ' ' + (w - pad) + ',' + (h - pad) + ' ' + pad + ',' + (h - pad);
+      // Color based on bar state (good/warn/bad)
+      const gradientId = 'hist-grad-' + Math.random().toString(36).slice(2, 8);
+      const colors = barState === 'bad' ? ['#ff4444', '#cc0000'] : barState === 'warn' ? ['#ffaa00', '#ff6600'] : ['#00ff88', '#00d9ff'];
+      return '<svg class="histogram" viewBox="0 0 ' + w + ' ' + h + '">' +
+        '<defs><linearGradient id="' + gradientId + '" x1="0%" y1="0%" x2="100%" y2="0%">' +
+          '<stop offset="0%" style="stop-color:' + colors[0] + ';stop-opacity:0.4"/>' +
+          '<stop offset="100%" style="stop-color:' + colors[1] + ';stop-opacity:0.4"/>' +
+        '</linearGradient></defs>' +
+        '<path class="area" d="M' + areaPoints + 'Z" fill="url(#' + gradientId + ')"/>' +
+        '<path d="M' + points + '" stroke="' + colors[1] + '" stroke-opacity="0.7"/>' +
       '</svg>';
     }
 
@@ -537,53 +637,75 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
           countdown = refreshInterval / 1000;
         }
 
-        // Update device cards
-        const grid = document.getElementById('deviceGrid');
-        grid.innerHTML = data.devices.length === 0
+        // Update device cartouches
+        const stack = document.getElementById('deviceStack');
+        stack.innerHTML = data.devices.length === 0
           ? '<p class="awaiting">No devices registered. <a href="/register">Register a device</a></p>'
           : data.devices.map(d => {
               const m = d.metrics || {};
               const sys = m.system || {};
               const nev = m.neverhang || {};
               const alan = m.alan || {};
+              const gw = m.gateway || {};
               const cpuPct = sys.cpu?.usage_percent || 0;
               const memPct = sys.memory?.usage_percent || 0;
               const diskPct = sys.disk?.usage_percent || 0;
               const lastSeen = d.lastSeen ? formatTimeSince(d.lastSeen) : 'never';
+              const successRate = Math.round((alan.success_rate_24h || 1) * 100);
+              const barClass = (pct) => pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
 
-              return '<div class="device-card" data-token="' + d.token + '">' +
-                '<div class="device-header">' +
+              return '<div class="device-cartouche" data-token="' + d.token + '">' +
+                '<div class="cartouche-header">' +
                   '<span class="device-name">' + d.name + '</span>' +
                   '<span class="device-seen">Last seen: ' + lastSeen + '</span>' +
                 '</div>' +
                 (d.metrics ? (
-                  '<div class="metrics-grid">' +
-                    '<div class="metric-card">' +
-                      '<div class="metric-value ' + gaugeClass(cpuPct) + '">' + Math.round(cpuPct) + '%</div>' +
-                      '<div class="metric-label">CPU</div>' +
-                      renderSparkline(extractHistory(d.metricsHistory, 'cpu'), gaugeColor(cpuPct)) +
+                  '<div class="cartouche-cards">' +
+                    // NEVERHANG
+                    '<div class="cartouche-card neverhang-card">' +
+                      '<div class="card-title">NEVERHANG</div>' +
+                      '<span class="circuit-tag ' + (nev.circuit || 'closed') + '">' + (nev.circuit || 'closed').toUpperCase() + '</span>' +
+                      '<div class="nev-stats">' + (nev.failures || 0) + ' failures<br>' + (nev.recoveries || 0) + ' recoveries</div>' +
                     '</div>' +
-                    '<div class="metric-card">' +
-                      '<div class="metric-value ' + gaugeClass(memPct) + '">' + Math.round(memPct) + '%</div>' +
-                      '<div class="metric-label">Memory</div>' +
-                      renderSparkline(extractHistory(d.metricsHistory, 'memory'), gaugeColor(memPct)) +
+                    // A.L.A.N.
+                    '<div class="cartouche-card alan-card">' +
+                      '<div class="card-title">A.L.A.N.</div>' +
+                      '<div class="alan-big">' + successRate + '%</div>' +
+                      '<div class="alan-label">success rate</div>' +
+                      '<div class="alan-stats">' + (alan.queries_24h || 0) + ' queries (24h)</div>' +
                     '</div>' +
-                    '<div class="metric-card">' +
-                      '<div class="metric-value ' + gaugeClass(diskPct) + '">' + Math.round(diskPct) + '%</div>' +
-                      '<div class="metric-label">Disk</div>' +
-                      renderSparkline(extractHistory(d.metricsHistory, 'disk'), gaugeColor(diskPct)) +
+                    // SYSTEM
+                    '<div class="cartouche-card system-card">' +
+                      '<div class="card-title">System</div>' +
+                      '<div class="system-bars">' +
+                        '<div class="bar-row" data-metric="cpu">' +
+                          '<div class="bar-header"><span class="bar-label">CPU</span><span class="bar-value ' + barClass(cpuPct) + '">' + Math.round(cpuPct) + '%</span></div>' +
+                          '<div class="bar-track"><div class="bar-fill ' + barClass(cpuPct) + '" style="width:' + cpuPct + '%"></div></div>' +
+                          '<div class="bar-histogram" data-type="cpu">' + renderHistogram(extractHistory(d.metricsHistory, 'cpu'), barClass(cpuPct)) + '</div>' +
+                        '</div>' +
+                        '<div class="bar-row" data-metric="memory">' +
+                          '<div class="bar-header"><span class="bar-label">Memory</span><span class="bar-value ' + barClass(memPct) + '">' + Math.round(memPct) + '%</span></div>' +
+                          '<div class="bar-track"><div class="bar-fill ' + barClass(memPct) + '" style="width:' + memPct + '%"></div></div>' +
+                          '<div class="bar-histogram" data-type="memory">' + renderHistogram(extractHistory(d.metricsHistory, 'memory'), barClass(memPct)) + '</div>' +
+                        '</div>' +
+                        '<div class="bar-row" data-metric="disk">' +
+                          '<div class="bar-header"><span class="bar-label">Disk</span><span class="bar-value ' + barClass(diskPct) + '">' + Math.round(diskPct) + '%</span></div>' +
+                          '<div class="bar-track"><div class="bar-fill ' + barClass(diskPct) + '" style="width:' + diskPct + '%"></div></div>' +
+                          '<div class="bar-histogram" data-type="disk">' + renderHistogram(extractHistory(d.metricsHistory, 'disk'), barClass(diskPct)) + '</div>' +
+                        '</div>' +
+                      '</div>' +
                     '</div>' +
-                  '</div>' +
-                  '<div class="status-row">' +
-                    '<div class="status-card">' +
-                      '<div class="status-title">NEVERHANG</div>' +
-                      '<div class="status-main circuit-' + (nev.circuit || 'closed') + '">' + (nev.circuit || 'closed').toUpperCase() + '</div>' +
-                      '<div class="status-detail">' + (nev.failures || 0) + ' failures • ' + (nev.recoveries || 0) + ' recoveries</div>' +
+                    // GATEWAY
+                    '<div class="cartouche-card gateway-card">' +
+                      '<div class="card-title">Gateway</div>' +
+                      '<div class="gateway-stat"><div class="gateway-value gateway-good">' + (gw.latency_ms || '--') + 'ms</div><div class="gateway-label">Latency</div></div>' +
+                      '<div class="gateway-stat"><div class="gateway-value gateway-good">' + (gw.packet_loss || 0) + '%</div><div class="gateway-label">Packet Loss</div></div>' +
                     '</div>' +
-                    '<div class="status-card">' +
-                      '<div class="status-title">A.L.A.N.</div>' +
-                      '<div class="status-main">' + (alan.queries_24h || 0) + ' queries</div>' +
-                      '<div class="status-detail">' + Math.round((alan.success_rate_24h || 1) * 100) + '% success rate</div>' +
+                    // CONTROLS
+                    '<div class="cartouche-card controls-card">' +
+                      '<div class="card-title">Controls</div>' +
+                      '<button class="control-btn" data-action="ping">Ping WAN</button>' +
+                      '<button class="control-btn" data-action="diag">Diagnose</button>' +
                     '</div>' +
                   '</div>'
                 ) : '<p class="awaiting">Awaiting metrics...</p>') +
