@@ -1,0 +1,14 @@
+---
+pfSense-pkg-guardian:
+  name: "pfSense-pkg-guardian"
+  version: "0.1.1"
+  origin: "sysutils/pfSense-pkg-guardian"
+  comment: "AI-powered emergency monitoring for pfSense"
+  desc: "pfSense Guardian monitors your firewall for emergencies and uses Claude AI to diagnose issues and suggest fixes."
+  maintainer: "mod@arktechnwa.com"
+  www: "https://pfsense-mcp.arktechnwa.com"
+  prefix: "/usr/local"
+  deps: {}
+  categories: ["sysutils"]
+  pkgsize: 4216
+  path: "All/pfSense-pkg-guardian-0.1.1.pkg"

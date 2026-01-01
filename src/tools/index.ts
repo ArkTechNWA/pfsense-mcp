@@ -158,6 +158,51 @@ export const TOOLS: Tool[] = [
       required: [],
     },
   },
+  {
+    name: "pf_service_start",
+    description:
+      "Start a pfSense service. Use pf_services_list first to see available services.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        service: {
+          type: "string",
+          description: "Service name (e.g., 'unbound', 'dpinger', 'ntpd')",
+        },
+      },
+      required: ["service"],
+    },
+  },
+  {
+    name: "pf_service_stop",
+    description:
+      "Stop a pfSense service. Warning: stopping critical services may affect connectivity.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        service: {
+          type: "string",
+          description: "Service name (e.g., 'unbound', 'dpinger', 'ntpd')",
+        },
+      },
+      required: ["service"],
+    },
+  },
+  {
+    name: "pf_service_restart",
+    description:
+      "Restart a pfSense service. Safe way to apply configuration changes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        service: {
+          type: "string",
+          description: "Service name (e.g., 'unbound', 'dpinger', 'ntpd')",
+        },
+      },
+      required: ["service"],
+    },
+  },
 
   // ==========================================================================
   // DIAGNOSTICS
@@ -185,6 +230,53 @@ export const TOOLS: Tool[] = [
     name: "pf_diag_arp",
     description:
       "Get ARP table. Shows IP-to-MAC mappings for devices on the network.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  // ==========================================================================
+  // GUARDIAN RELAY (Emergency Monitoring)
+  // ==========================================================================
+  {
+    name: "pf_guardian_devices",
+    description:
+      "List all devices registered with the Guardian relay. Shows device names, emails, and last seen times.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: {
+          type: "string",
+          description: "Filter by email address (optional)",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "pf_guardian_events",
+    description:
+      "Get recent emergency events from the Guardian relay. Shows alerts triggered by pfSense devices.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: {
+          type: "string",
+          description: "Filter by email address (optional)",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum events to return (default: 20, max: 100)",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "pf_guardian_health",
+    description:
+      "Get Guardian relay health status. Shows uptime, device count, and pending diagnostics.",
     inputSchema: {
       type: "object",
       properties: {},

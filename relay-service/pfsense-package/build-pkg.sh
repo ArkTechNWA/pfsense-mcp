@@ -5,7 +5,8 @@
 
 set -e
 
-VERSION="0.1.0"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VERSION="0.1.1"
 PKG_NAME="pfSense-pkg-guardian"
 STAGING_DIR="/tmp/guardian-pkg-staging"
 
@@ -20,8 +21,8 @@ mkdir -p "$STAGING_DIR/usr/local/pkg"
 mkdir -p "$STAGING_DIR/usr/local/share/${PKG_NAME}"
 
 # Copy files
-cp pkg/pfsense-guardian.xml "$STAGING_DIR/usr/local/pkg/"
-cp pkg/pfsense-guardian.inc "$STAGING_DIR/usr/local/pkg/"
+cp "$SCRIPT_DIR/pkg/pfsense-guardian.xml" "$STAGING_DIR/usr/local/pkg/"
+cp "$SCRIPT_DIR/pkg/pfsense-guardian.inc" "$STAGING_DIR/usr/local/pkg/"
 
 # Create +MANIFEST
 cat > "$STAGING_DIR/+MANIFEST" << EOF
@@ -85,13 +86,13 @@ tar -cJf "../${PKG_NAME}-${VERSION}.pkg" \
     +MANIFEST +INSTALL +DEINSTALL +COMPACT_MANIFEST \
     usr/
 
-mv "../${PKG_NAME}-${VERSION}.pkg" "$(dirname $0)/repo/All/"
+mv "../${PKG_NAME}-${VERSION}.pkg" "$SCRIPT_DIR/repo/All/"
 
 echo "Package built: repo/All/${PKG_NAME}-${VERSION}.pkg"
 
 # Generate repo metadata
 echo "Generating repo metadata..."
-cd "$(dirname $0)/repo"
+cd "$SCRIPT_DIR/repo"
 
 cat > meta.conf << EOF
 version = 2;

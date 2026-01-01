@@ -271,6 +271,14 @@ export class PfSenseClient {
     return this.get<ServiceStatus[]>("/status/services");
   }
 
+  async startService(service: string): Promise<ApiResponse<void>> {
+    return this.post<void>(`/service/${service}/start`);
+  }
+
+  async stopService(service: string): Promise<ApiResponse<void>> {
+    return this.post<void>(`/service/${service}/stop`);
+  }
+
   async restartService(service: string): Promise<ApiResponse<void>> {
     return this.post<void>(`/service/${service}/restart`);
   }

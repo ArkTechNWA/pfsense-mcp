@@ -22,7 +22,11 @@ import { PfSenseClient } from "./pfsense-client.js";
 import { TOOLS } from "./tools/index.js";
 
 const SERVER_NAME = "pfsense-mcp";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.1.1";
+
+// Guardian relay configuration
+const GUARDIAN_RELAY_URL = process.env.GUARDIAN_RELAY_URL || "https://pfsense-mcp.arktechnwa.com";
+const GUARDIAN_ADMIN_KEY = process.env.GUARDIAN_ADMIN_KEY || "";
 
 // Global state
 let db: Database.Database;
@@ -253,6 +257,27 @@ async function executeToolInner(
       }));
     }
 
+    case "pf_service_start": {
+      const service = args.service as string;
+      if (!service) throw new Error("service parameter required");
+      await client.startService(service);
+      return { success: true, action: "started", service };
+    }
+
+    case "pf_service_stop": {
+      const service = args.service as string;
+      if (!service) throw new Error("service parameter required");
+      await client.stopService(service);
+      return { success: true, action: "stopped", service };
+    }
+
+    case "pf_service_restart": {
+      const service = args.service as string;
+      if (!service) throw new Error("service parameter required");
+      await client.restartService(service);
+      return { success: true, action: "restarted", service };
+    }
+
     // ========================================================================
     // DIAGNOSTICS
     // ========================================================================
@@ -277,6 +302,60 @@ async function executeToolInner(
         hostname: e.hostname,
         type: e.type,
       }));
+    }
+
+    // ========================================================================
+    // GUARDIAN RELAY
+    // ========================================================================
+    case "pf_guardian_devices": {
+      if (!GUARDIAN_ADMIN_KEY) {
+        throw new Error("GUARDIAN_ADMIN_KEY not configured");
+      }
+      const email = args.email as string | undefined;
+      const url = new URL("/api/admin/devices", GUARDIAN_RELAY_URL);
+      if (email) url.searchParams.set("email", email);
+
+      const response = await fetch(url.toString(), {
+        headers: { "X-Admin-Key": GUARDIAN_ADMIN_KEY },
+      });
+      if (!response.ok) {
+        throw new Error(`Guardian API error: ${response.status}`);
+      }
+      return await response.json();
+    }
+
+    case "pf_guardian_events": {
+      if (!GUARDIAN_ADMIN_KEY) {
+        throw new Error("GUARDIAN_ADMIN_KEY not configured");
+      }
+      const email = args.email as string | undefined;
+      const limit = Math.min((args.limit as number) || 20, 100);
+      const url = new URL("/api/admin/events", GUARDIAN_RELAY_URL);
+      if (email) url.searchParams.set("email", email);
+      url.searchParams.set("limit", limit.toString());
+
+      const response = await fetch(url.toString(), {
+        headers: { "X-Admin-Key": GUARDIAN_ADMIN_KEY },
+      });
+      if (!response.ok) {
+        throw new Error(`Guardian API error: ${response.status}`);
+      }
+      return await response.json();
+    }
+
+    case "pf_guardian_health": {
+      if (!GUARDIAN_ADMIN_KEY) {
+        throw new Error("GUARDIAN_ADMIN_KEY not configured");
+      }
+      const url = new URL("/api/admin/health", GUARDIAN_RELAY_URL);
+
+      const response = await fetch(url.toString(), {
+        headers: { "X-Admin-Key": GUARDIAN_ADMIN_KEY },
+      });
+      if (!response.ok) {
+        throw new Error(`Guardian API error: ${response.status}`);
+      }
+      return await response.json();
     }
 
     default:

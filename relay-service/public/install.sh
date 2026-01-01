@@ -81,10 +81,10 @@ echo ""
 echo "${YELLOW}Registering with relay...${NC}"
 
 # Register with relay
-REGISTER_RESPONSE=$(fetch -qo - \
-    --method POST \
-    --header "Content-Type: application/x-www-form-urlencoded" \
-    --body "device_token=${DEVICE_TOKEN}&email=${EMAIL}&api_key=${API_KEY}&name=${DEVICE_NAME}" \
+REGISTER_RESPONSE=$(/usr/local/bin/curl -s \
+    -X POST \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "device_token=${DEVICE_TOKEN}&email=${EMAIL}&api_key=${API_KEY}&name=${DEVICE_NAME}" \
     "${RELAY_URL}/register" 2>&1) || {
     echo "${RED}Error: Failed to register with relay${NC}"
     echo "$REGISTER_RESPONSE"
@@ -142,18 +142,20 @@ send_alert() {
     PAYLOAD="{\"type\":\"${TYPE}\",\"severity\":\"${SEVERITY}\",\"summary\":\"${SUMMARY}\",\"context\":${CONTEXT}}"
     SIGNATURE=$(echo -n "${TIMESTAMP}.${PAYLOAD}" | openssl dgst -sha256 -hmac "$DEVICE_TOKEN" | awk '{print $2}')
     
-    fetch -qo /dev/null \
-        --method POST \
-        --header "Content-Type: application/json" \
-        --header "X-Device-Token: ${DEVICE_TOKEN}" \
-        --header "X-Timestamp: ${TIMESTAMP}" \
-        --header "X-Signature: ${SIGNATURE}" \
-        --body "$PAYLOAD" \
+    /usr/local/bin/curl -s -o /dev/null \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-Device-Token: ${DEVICE_TOKEN}" \
+        -H "X-Timestamp: ${TIMESTAMP}" \
+        -H "X-Signature: ${SIGNATURE}" \
+        -d "$PAYLOAD" \
         "${RELAY_URL}/emergency" 2>/dev/null
 }
 
-# Check CPU
-CPU_USAGE=$(top -b -n 1 | grep "CPU:" | awk '{print int($2)}')
+# Check CPU (FreeBSD style - handle floats)
+CPU_IDLE=$(top -b -d 1 | grep "CPU:" | head -1 | sed 's/.*,//;s/% idle.*//' | tr -d ' ')
+CPU_IDLE_INT=$(printf "%.0f" "${CPU_IDLE:-0}")
+CPU_USAGE=$((100 - CPU_IDLE_INT))
 if [ "$CPU_USAGE" -gt "$CPU_THRESHOLD" ]; then
     TOP_PROC=$(ps auxww | sort -k 3 -r | head -2 | tail -1 | awk '{print $11}')
     send_alert "high_cpu" "warning" "CPU usage at ${CPU_USAGE}% - top process: ${TOP_PROC}" \
@@ -194,13 +196,13 @@ TIMESTAMP=$(($(date +%s) * 1000))
 PAYLOAD="{\"status\":\"healthy\",\"cpu\":${CPU_USAGE:-0},\"memory\":${MEM_USAGE:-0},\"disk\":${DISK_USAGE:-0}}"
 SIGNATURE=$(echo -n "${TIMESTAMP}.${PAYLOAD}" | openssl dgst -sha256 -hmac "$DEVICE_TOKEN" | awk '{print $2}')
 
-fetch -qo /dev/null \
-    --method POST \
-    --header "Content-Type: application/json" \
-    --header "X-Device-Token: ${DEVICE_TOKEN}" \
-    --header "X-Timestamp: ${TIMESTAMP}" \
-    --header "X-Signature: ${SIGNATURE}" \
-    --body "$PAYLOAD" \
+/usr/local/bin/curl -s -o /dev/null \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -H "X-Device-Token: ${DEVICE_TOKEN}" \
+    -H "X-Timestamp: ${TIMESTAMP}" \
+    -H "X-Signature: ${SIGNATURE}" \
+    -d "$PAYLOAD" \
     "${RELAY_URL}/checkin" 2>/dev/null
 
 GUARDIAN

@@ -2,7 +2,7 @@
 <packagegui>
   <name>pfSense-Guardian</name>
   <title>Services/pfSense Guardian</title>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <include_file>/usr/local/pkg/pfsense-guardian.inc</include_file>
   <menu>
     <name>pfSense Guardian</name>
@@ -94,15 +94,39 @@
     </field>
     <field>
       <fielddescr>Device Token</fielddescr>
-      <fieldname>device_token</fieldname>
+      <fieldname>device_token_display</fieldname>
       <type>info</type>
-      <description>Your unique device identifier (auto-generated)</description>
+      <description><![CDATA[<?php
+        global $config;
+        $token = $config['installedpackages']['pfsenseguardian']['config'][0]['device_token'] ?? '';
+        echo $token ? '<code>' . htmlspecialchars(substr($token, 0, 16)) . '...</code>' : '<em>Not yet generated</em>';
+      ?>]]></description>
     </field>
     <field>
       <fielddescr>Last Check</fielddescr>
-      <fieldname>last_check</fieldname>
+      <fieldname>last_check_display</fieldname>
       <type>info</type>
-      <description>Last health check timestamp</description>
+      <description><![CDATA[<?php
+        $config_file = '/usr/local/etc/pfsense-guardian.conf';
+        $script = '/usr/local/bin/pfsense-guardian';
+        if (file_exists($script)) {
+          $mtime = filemtime($script);
+          $last_run = shell_exec('grep -l "guardian" /var/log/cron 2>/dev/null | tail -1');
+          if ($last_run) {
+            echo date('Y-m-d H:i:s', $mtime);
+          } else {
+            echo '<em>Waiting for first check-in...</em>';
+          }
+        } else {
+          echo '<em>Guardian not installed</em>';
+        }
+      ?>]]></description>
+    </field>
+    <field>
+      <fielddescr>Dashboard</fielddescr>
+      <fieldname>dashboard_link</fieldname>
+      <type>info</type>
+      <description><![CDATA[<a href="https://pfsense-mcp.arktechnwa.com/dashboard" target="_blank">Open Guardian Dashboard ↗</a>]]></description>
     </field>
   </fields>
   <custom_php_install_command>
