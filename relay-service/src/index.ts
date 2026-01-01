@@ -83,11 +83,15 @@ app.get("/dashboard", (req, res) => {
     historyCache.set(m.device_token, db.getMetricsHistory(m.device_token, 30));
   }
 
-  // Sparkline renderer - ASCII art histogram
-  const renderSparkline = (history: Array<{ metrics: any; created_at: number }>, path: string, current: number): string => {
-    if (history.length < 2) return '<span class="sparkline dim">awaiting data...</span>';
+  // Sparkline renderer - right-justified with dot fill
+  const renderSparkline = (history: Array<{ metrics: any; created_at: number }>, path: string): string => {
+    const WIDTH = 30; // Match gauge width visually
+    if (history.length < 2) {
+      const dots = '.'.repeat(WIDTH - 12);
+      return `<span class="sparkline">${dots}awaiting data</span>`;
+    }
 
-    // Extract values from history (oldest to newest for left-to-right display)
+    // Extract values (oldest to newest, fills from right)
     const values: number[] = [];
     for (let i = history.length - 1; i >= 0; i--) {
       const m = history[i].metrics;
@@ -98,7 +102,7 @@ app.get("/dashboard", (req, res) => {
       values.push(val);
     }
 
-    // Normalize to 0-7 scale for 8 levels
+    // Build sparkline chars
     const chars = ' ▁▂▃▄▅▆▇';
     let spark = '';
     for (const v of values) {
@@ -106,15 +110,11 @@ app.get("/dashboard", (req, res) => {
       spark += chars[idx];
     }
 
-    // Current position indicator (gauge bar)
-    const barWidth = 20;
-    const pos = Math.min(barWidth - 1, Math.floor(current / 100 * barWidth));
-    let gauge = '';
-    for (let i = 0; i < barWidth; i++) {
-      gauge += i === pos ? '+' : '-';
-    }
+    // Right-justify: pad left with dots
+    const padding = Math.max(0, WIDTH - spark.length);
+    const dots = '.'.repeat(padding);
 
-    return `<span class="sparkline">[${gauge}]</span><br><span class="sparkline hist">${spark}</span>`;
+    return `<span class="sparkline">${dots}${spark}</span>`;
   };
 
   // Helper functions for rendering
@@ -208,21 +208,21 @@ app.get("/dashboard", (req, res) => {
             <span class="metric-value ${gaugeClass(cpuPct)}">${cpuPct}%</span>
           </div>
           <div class="gauge"><div class="gauge-fill ${gaugeClass(cpuPct)}" style="width: ${cpuPct}%"></div></div>
-          <div class="sparkline-row">${renderSparkline(history, 'cpu', cpuPct)}</div>
+          <div class="sparkline-row">${renderSparkline(history, 'cpu')}</div>
 
           <div class="metric" style="margin-top: 12px;">
             <span class="metric-label">Memory</span>
             <span class="metric-value ${gaugeClass(memPct)}">${memPct}%</span>
           </div>
           <div class="gauge"><div class="gauge-fill ${gaugeClass(memPct)}" style="width: ${memPct}%"></div></div>
-          <div class="sparkline-row">${renderSparkline(history, 'mem', memPct)}</div>
+          <div class="sparkline-row">${renderSparkline(history, 'mem')}</div>
 
           <div class="metric" style="margin-top: 12px;">
             <span class="metric-label">Disk</span>
             <span class="metric-value ${gaugeClass(diskPct)}">${diskPct}%</span>
           </div>
           <div class="gauge"><div class="gauge-fill ${gaugeClass(diskPct)}" style="width: ${diskPct}%"></div></div>
-          <div class="sparkline-row">${renderSparkline(history, 'disk', diskPct)}</div>
+          <div class="sparkline-row">${renderSparkline(history, 'disk')}</div>
 
           <div class="metric" style="margin-top: 12px;"><span class="metric-label">Uptime</span><span class="metric-value">${system.uptime || 'unknown'}</span></div>
           <div class="metric"><span class="metric-label">Platform</span><span class="metric-value">${system.platform || 'unknown'}</span></div>
@@ -316,10 +316,8 @@ app.get("/dashboard", (req, res) => {
     .gauge-fill.warn { background: linear-gradient(90deg, #ffaa00, #ff6600); }
     .gauge-fill.bad { background: linear-gradient(90deg, #ff4444, #ff0000); }
 
-    .sparkline-row { margin-top: 4px; font-size: 10px; line-height: 1.3; }
-    .sparkline { font-family: 'JetBrains Mono', monospace; color: #555; letter-spacing: -1px; }
-    .sparkline.hist { color: #00d9ff; letter-spacing: 0; }
-    .sparkline.dim { color: #333; font-style: italic; }
+    .sparkline-row { margin-top: 4px; font-size: 11px; line-height: 1; font-family: 'JetBrains Mono', monospace; }
+    .sparkline { color: #00d9ff; letter-spacing: 0.5px; }
 
     .device-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #1a1a2a; border-radius: 8px; margin-bottom: 8px; }
     .device-name { font-weight: 600; }
@@ -350,12 +348,12 @@ app.get("/dashboard", (req, res) => {
       <div class="metric"><span class="metric-label">Pending Commands</span><span class="metric-value">${stats.pending_commands}</span></div>
     </div>
 
-    ${metricsHtml}
-
     <div class="card neutral">
       <h2>Registered Devices</h2>
       ${devicesHtml}
     </div>
+
+    ${metricsHtml}
   </div>
 
   <div class="footer">
