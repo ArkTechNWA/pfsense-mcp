@@ -77,6 +77,46 @@ app.get("/dashboard", (req, res) => {
   const allMetrics = db.getAllLatestMetrics();
   const devices = db.getAllDevices();
 
+  // Build history cache for sparklines (fetch once per device)
+  const historyCache: Map<string, Array<{ metrics: any; created_at: number }>> = new Map();
+  for (const m of allMetrics) {
+    historyCache.set(m.device_token, db.getMetricsHistory(m.device_token, 30));
+  }
+
+  // Sparkline renderer - ASCII art histogram
+  const renderSparkline = (history: Array<{ metrics: any; created_at: number }>, path: string, current: number): string => {
+    if (history.length < 2) return '<span class="sparkline dim">awaiting data...</span>';
+
+    // Extract values from history (oldest to newest for left-to-right display)
+    const values: number[] = [];
+    for (let i = history.length - 1; i >= 0; i--) {
+      const m = history[i].metrics;
+      let val = 0;
+      if (path === 'cpu') val = m.system?.cpu?.usage_percent || 0;
+      else if (path === 'mem') val = m.system?.memory?.usage_percent || 0;
+      else if (path === 'disk') val = m.system?.disk?.usage_percent || 0;
+      values.push(val);
+    }
+
+    // Normalize to 0-7 scale for 8 levels
+    const chars = ' ▁▂▃▄▅▆▇';
+    let spark = '';
+    for (const v of values) {
+      const idx = Math.min(7, Math.floor(v / 12.5));
+      spark += chars[idx];
+    }
+
+    // Current position indicator (gauge bar)
+    const barWidth = 20;
+    const pos = Math.min(barWidth - 1, Math.floor(current / 100 * barWidth));
+    let gauge = '';
+    for (let i = 0; i < barWidth; i++) {
+      gauge += i === pos ? '+' : '-';
+    }
+
+    return `<span class="sparkline">[${gauge}]</span><br><span class="sparkline hist">${spark}</span>`;
+  };
+
   // Helper functions for rendering
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -136,6 +176,9 @@ app.get("/dashboard", (req, res) => {
         </div>`;
       }
 
+      // Get history for sparklines
+      const history = historyCache.get(m.device_token) || [];
+
       metricsHtml += `
     <div class="cartouche ${healthClass}">
       <div class="cartouche-header">${deviceName}</div>
@@ -165,18 +208,21 @@ app.get("/dashboard", (req, res) => {
             <span class="metric-value ${gaugeClass(cpuPct)}">${cpuPct}%</span>
           </div>
           <div class="gauge"><div class="gauge-fill ${gaugeClass(cpuPct)}" style="width: ${cpuPct}%"></div></div>
+          <div class="sparkline-row">${renderSparkline(history, 'cpu', cpuPct)}</div>
 
           <div class="metric" style="margin-top: 12px;">
             <span class="metric-label">Memory</span>
             <span class="metric-value ${gaugeClass(memPct)}">${memPct}%</span>
           </div>
           <div class="gauge"><div class="gauge-fill ${gaugeClass(memPct)}" style="width: ${memPct}%"></div></div>
+          <div class="sparkline-row">${renderSparkline(history, 'mem', memPct)}</div>
 
           <div class="metric" style="margin-top: 12px;">
             <span class="metric-label">Disk</span>
             <span class="metric-value ${gaugeClass(diskPct)}">${diskPct}%</span>
           </div>
           <div class="gauge"><div class="gauge-fill ${gaugeClass(diskPct)}" style="width: ${diskPct}%"></div></div>
+          <div class="sparkline-row">${renderSparkline(history, 'disk', diskPct)}</div>
 
           <div class="metric" style="margin-top: 12px;"><span class="metric-label">Uptime</span><span class="metric-value">${system.uptime || 'unknown'}</span></div>
           <div class="metric"><span class="metric-label">Platform</span><span class="metric-value">${system.platform || 'unknown'}</span></div>
@@ -269,6 +315,11 @@ app.get("/dashboard", (req, res) => {
     .gauge-fill.good { background: linear-gradient(90deg, #00ff88, #00d9ff); }
     .gauge-fill.warn { background: linear-gradient(90deg, #ffaa00, #ff6600); }
     .gauge-fill.bad { background: linear-gradient(90deg, #ff4444, #ff0000); }
+
+    .sparkline-row { margin-top: 4px; font-size: 10px; line-height: 1.3; }
+    .sparkline { font-family: 'JetBrains Mono', monospace; color: #555; letter-spacing: -1px; }
+    .sparkline.hist { color: #00d9ff; letter-spacing: 0; }
+    .sparkline.dim { color: #333; font-style: italic; }
 
     .device-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #1a1a2a; border-radius: 8px; margin-bottom: 8px; }
     .device-name { font-weight: 600; }
