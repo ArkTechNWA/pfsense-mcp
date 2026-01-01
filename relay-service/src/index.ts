@@ -153,6 +153,19 @@ app.get("/dashboard", (req, res) => {
 
   const gaugeClass = (pct: number): string => pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
 
+  // Condense uptime: "3 Days 02 Hours 05 Minutes 34 Seconds" → "3d 2h 5m"
+  const formatUptime = (uptime: string): string => {
+    if (!uptime) return '—';
+    const d = uptime.match(/(\d+)\s*Day/i);
+    const h = uptime.match(/(\d+)\s*Hour/i);
+    const m = uptime.match(/(\d+)\s*Minute/i);
+    const parts: string[] = [];
+    if (d) parts.push(parseInt(d[1]) + 'd');
+    if (h) parts.push(parseInt(h[1]) + 'h');
+    if (m) parts.push(parseInt(m[1]) + 'm');
+    return parts.length ? parts.join(' ') : uptime;
+  };
+
   // Render device metrics cards
   let metricsHtml = '';
   if (allMetrics.length > 0) {
@@ -241,7 +254,7 @@ app.get("/dashboard", (req, res) => {
           <div class="gauge"><div class="gauge-fill ${gaugeClass(diskPct)}" style="width: ${diskPct}%"></div></div>
           <div class="sparkline-row">${renderSparkline(history, 'disk')}</div>
 
-          <div class="metric" style="margin-top: 12px;"><span class="metric-label">Uptime</span><span class="metric-value">${system.uptime || 'unknown'}</span></div>
+          <div class="metric" style="margin-top: 12px;"><span class="metric-label">Uptime</span><span class="metric-value">${formatUptime(system.uptime)}</span></div>
           <div class="metric"><span class="metric-label">Platform</span><span class="metric-value">${system.platform || 'unknown'}</span></div>
         </div>
 
