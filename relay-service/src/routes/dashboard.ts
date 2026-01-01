@@ -207,17 +207,80 @@ function formatTimeSince(timestamp: number): string {
   return days + " day" + (days > 1 ? "s" : "") + " ago";
 }
 
+// API endpoint for RRD historical data
+router.get("/api/dashboard/rrd/:metric", requireAuthAPI, (req: AuthRequest, res: Response) => {
+  const devices = db.getDevicesByEmail(req.userEmail!);
+  if (devices.length === 0) {
+    return res.status(404).json({ error: "No devices found" });
+  }
+
+  // Get RRD data for user's first device (expand later for multi-device)
+  const device = devices[0];
+  const metric = req.params.metric;
+  const rrdData = db.getRrdData(device.token, metric);
+
+  if (rrdData.length === 0) {
+    return res.status(404).json({ error: "No RRD data available for this metric" });
+  }
+
+  // Return all periods for this metric
+  res.json({
+    device: device.name || device.token.slice(0, 8),
+    metric,
+    periods: rrdData.map((r) => ({
+      period: r.period,
+      data: JSON.parse(r.data_json),
+      updated_at: new Date(r.created_at).toISOString(),
+    })),
+  });
+});
+
+// API endpoint for all available RRD metrics
+router.get("/api/dashboard/rrd", requireAuthAPI, (req: AuthRequest, res: Response) => {
+  const devices = db.getDevicesByEmail(req.userEmail!);
+  if (devices.length === 0) {
+    return res.status(404).json({ error: "No devices found" });
+  }
+
+  const device = devices[0];
+  const allRrd = db.getRrdData(device.token);
+
+  // Group by metric
+  const metrics: Record<string, string[]> = {};
+  allRrd.forEach((r) => {
+    if (!metrics[r.metric]) metrics[r.metric] = [];
+    metrics[r.metric].push(r.period);
+  });
+
+  res.json({
+    device: device.name || device.token.slice(0, 8),
+    available_metrics: Object.entries(metrics).map(([metric, periods]) => ({ metric, periods })),
+  });
+});
+
 // API endpoint for dashboard data (for auto-refresh)
 router.get("/api/dashboard/status", requireAuthAPI, (req: AuthRequest, res: Response) => {
   const devices = db.getDevicesByEmail(req.userEmail!);
   const recentEvents = db.getRecentEventsByEmail(req.userEmail!, 20);
 
-  const deviceData = devices.map((d: any) => ({
-    name: d.name || d.token.slice(0, 8),
-    lastSeen: d.last_seen_at,
-    lastSeenFormatted: d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : "Waiting for check-in",
-    timeSince: d.last_seen_at ? formatTimeSince(d.last_seen_at) : "",
-  }));
+  // Fetch metrics for each device
+  const deviceData = devices.map((d: any) => {
+    const latestMetrics = db.getLatestMetrics(d.token);
+    const metricsHistory = db.getMetricsHistory(d.token, 30);
+
+    return {
+      name: d.name || d.token.slice(0, 8),
+      token: d.token,
+      lastSeen: d.last_seen_at,
+      lastSeenFormatted: d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : "Waiting for check-in",
+      timeSince: d.last_seen_at ? formatTimeSince(d.last_seen_at) : "",
+      metrics: latestMetrics?.metrics || null,
+      metricsHistory: metricsHistory.map(h => ({
+        metrics: h.metrics,
+        timestamp: h.created_at,
+      })),
+    };
+  });
 
   const eventData = recentEvents.map((e: any) => ({
     severity: e.severity,
@@ -234,21 +297,20 @@ router.get("/api/dashboard/status", requireAuthAPI, (req: AuthRequest, res: Resp
   });
 });
 
-// Dashboard with auto-refresh
+// Dashboard with auto-refresh and NEVERHANG/ALAN metrics
 router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
   const devices = db.getDevicesByEmail(req.userEmail!);
   const recentEvents = db.getRecentEventsByEmail(req.userEmail!, 20);
 
-  const deviceRows = devices.map((d: any) => {
-    const lastSeen = d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : "Waiting for check-in";
-    const timeSince = d.last_seen_at ? formatTimeSince(d.last_seen_at) : "";
-    return `
-    <tr data-device>
-      <td class="dev-name">${d.name || d.token.slice(0, 8)}</td>
-      <td class="dev-lastseen">${lastSeen}${timeSince ? " (" + timeSince + ")" : ""}</td>
-    </tr>
-  `;
-  }).join("");
+  // Fetch metrics for initial render
+  const deviceMetrics = devices.map((d: any) => {
+    const latestMetrics = db.getLatestMetrics(d.token);
+    return {
+      ...d,
+      name: d.name || d.token.slice(0, 8),
+      metrics: latestMetrics?.metrics || null,
+    };
+  });
 
   const eventRows = recentEvents.map((e: any) => `
     <tr data-event>
@@ -265,28 +327,54 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
   <title>pfSense Guardian - Dashboard</title>
   <meta name=viewport content=width=device-width,initial-scale=1>
   <style>
+    * { box-sizing: border-box; }
     body { font-family: system-ui; background: #1a1a2e; color: #eee; margin: 0; padding: 20px; }
-    .container { max-width: 1000px; margin: 0 auto; }
+    .container { max-width: 1200px; margin: 0 auto; }
     h1 { color: #00d9ff; margin-bottom: 5px; }
-    .email { color: #888; margin-bottom: 30px; }
-    h2 { color: #00ff88; border-bottom: 1px solid #333; padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-    h2 .refresh-info { font-size: 0.5em; color: #666; font-weight: normal; }
-    table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
+    .email { color: #888; margin-bottom: 20px; }
+    h2 { color: #00ff88; border-bottom: 1px solid #333; padding-bottom: 10px; margin-top: 30px; }
+    table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #333; }
     th { background: #16213e; }
     .sev-critical { color: #ff4444; font-weight: bold; }
     .sev-warning { color: #ffaa00; }
     .sev-info { color: #00d9ff; }
-    .stats { display: flex; gap: 20px; flex-wrap: wrap; }
-    .stat { background: #0f3460; padding: 20px; border-radius: 8px; min-width: 150px; }
-    .stat-value { font-size: 2em; color: #00d9ff; }
-    .stat-label { color: #888; }
     a { color: #00d9ff; }
     .logout { float: right; }
     .note { color: #666; font-size: 0.9em; margin-top: 10px; }
     .refresh-status { color: #666; font-size: 0.85em; text-align: right; margin-bottom: 20px; }
     .refresh-status .live { color: #00ff88; }
-    .updating td { opacity: 0.5; transition: opacity 0.2s; }
+
+    /* Device cards */
+    .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }
+    .device-card { background: #16213e; border-radius: 8px; padding: 20px; }
+    .device-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+    .device-name { font-size: 1.3em; color: #00d9ff; }
+    .device-seen { font-size: 0.85em; color: #666; }
+
+    /* Metrics grid */
+    .metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 15px; }
+    .metric-card { background: #0f3460; border-radius: 6px; padding: 12px; text-align: center; }
+    .metric-value { font-size: 1.8em; font-weight: bold; }
+    .metric-label { font-size: 0.75em; color: #888; margin-top: 4px; }
+    .metric-good { color: #00ff88; }
+    .metric-warn { color: #ffaa00; }
+    .metric-bad { color: #ff4444; }
+
+    /* Status cards */
+    .status-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 15px; }
+    .status-card { background: #0f3460; border-radius: 6px; padding: 12px; }
+    .status-title { font-size: 0.8em; color: #888; margin-bottom: 8px; }
+    .status-main { font-size: 1.2em; }
+    .status-detail { font-size: 0.75em; color: #666; margin-top: 4px; }
+
+    /* Circuit states */
+    .circuit-closed { color: #00ff88; }
+    .circuit-open { color: #ff4444; }
+    .circuit-half_open { color: #ffaa00; }
+
+    /* Awaiting data */
+    .awaiting { color: #666; font-style: italic; }
   </style>
 </head>
 <body>
@@ -299,22 +387,59 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       Next refresh in <span id=countdown>5:00</span>
     </p>
 
-    <div class=stats>
-      <div class=stat>
-        <div class=stat-value id=deviceCount>${devices.length}</div>
-        <div class=stat-label>Devices</div>
-      </div>
-      <div class=stat>
-        <div class=stat-value id=eventCount>${recentEvents.length}</div>
-        <div class=stat-label>Recent Events</div>
-      </div>
-    </div>
+    <div class="device-grid" id="deviceGrid">
+      ${deviceMetrics.length === 0 ? '<p class="awaiting">No devices registered. <a href="/register">Register a device</a></p>' :
+        deviceMetrics.map((d: any) => {
+          const m = d.metrics || {};
+          const sys = m.system || {};
+          const nev = m.neverhang || {};
+          const alan = m.alan || {};
+          const cpuPct = sys.cpu?.usage_percent || 0;
+          const memPct = sys.memory?.usage_percent || 0;
+          const diskPct = sys.disk?.usage_percent || 0;
+          const gaugeClass = (pct: number) => pct > 80 ? 'metric-bad' : pct > 50 ? 'metric-warn' : 'metric-good';
+          const lastSeen = d.last_seen_at ? formatTimeSince(d.last_seen_at) : 'never';
 
-    <h2>Devices</h2>
-    <table id=devicesTable>
-      <tr><th>Name</th><th>Last Check-in</th></tr>
-      ${deviceRows || "<tr><td colspan=2>No devices registered</td></tr>"}
-    </table>
+          return `
+          <div class="device-card" data-token="${d.token}">
+            <div class="device-header">
+              <span class="device-name">${d.name}</span>
+              <span class="device-seen">Last seen: ${lastSeen}</span>
+            </div>
+
+            ${d.metrics ? `
+            <div class="metrics-grid">
+              <div class="metric-card">
+                <div class="metric-value ${gaugeClass(cpuPct)}">${Math.round(cpuPct)}%</div>
+                <div class="metric-label">CPU</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-value ${gaugeClass(memPct)}">${Math.round(memPct)}%</div>
+                <div class="metric-label">Memory</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-value ${gaugeClass(diskPct)}">${Math.round(diskPct)}%</div>
+                <div class="metric-label">Disk</div>
+              </div>
+            </div>
+
+            <div class="status-row">
+              <div class="status-card">
+                <div class="status-title">NEVERHANG</div>
+                <div class="status-main circuit-${nev.circuit || 'closed'}">${(nev.circuit || 'closed').toUpperCase()}</div>
+                <div class="status-detail">${nev.failures || 0} failures • ${nev.recoveries || 0} recoveries</div>
+              </div>
+              <div class="status-card">
+                <div class="status-title">A.L.A.N.</div>
+                <div class="status-main">${alan.queries_24h || 0} queries</div>
+                <div class="status-detail">${Math.round((alan.success_rate_24h || 1) * 100)}% success rate</div>
+              </div>
+            </div>
+            ` : '<p class="awaiting">Awaiting metrics...</p>'}
+          </div>`;
+        }).join('')
+      }
+    </div>
 
     <h2>Recent Events</h2>
     <table id=eventsTable>
@@ -335,6 +460,21 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       return m + ':' + String(s).padStart(2, '0');
     }
 
+    function formatTimeSince(ts) {
+      const diff = Date.now() - ts;
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + ' min ago';
+      const hours = Math.floor(mins / 60);
+      if (hours < 24) return hours + ' hr ago';
+      const days = Math.floor(hours / 24);
+      return days + ' day' + (days > 1 ? 's' : '') + ' ago';
+    }
+
+    function gaugeClass(pct) {
+      return pct > 80 ? 'metric-bad' : pct > 50 ? 'metric-warn' : 'metric-good';
+    }
+
     function updateCountdown() {
       countdown--;
       if (countdown <= 0) {
@@ -353,24 +493,51 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
         }
         const data = await res.json();
 
-        // Update refresh interval if server says different
         if (data.refreshInterval && data.refreshInterval !== refreshInterval) {
           refreshInterval = data.refreshInterval;
           countdown = refreshInterval / 1000;
         }
 
-        // Update stats
-        document.getElementById('deviceCount').textContent = data.devices.length;
-        document.getElementById('eventCount').textContent = data.events.length;
+        // Update device cards
+        const grid = document.getElementById('deviceGrid');
+        grid.innerHTML = data.devices.length === 0
+          ? '<p class="awaiting">No devices registered. <a href="/register">Register a device</a></p>'
+          : data.devices.map(d => {
+              const m = d.metrics || {};
+              const sys = m.system || {};
+              const nev = m.neverhang || {};
+              const alan = m.alan || {};
+              const cpuPct = sys.cpu?.usage_percent || 0;
+              const memPct = sys.memory?.usage_percent || 0;
+              const diskPct = sys.disk?.usage_percent || 0;
+              const lastSeen = d.lastSeen ? formatTimeSince(d.lastSeen) : 'never';
 
-        // Update devices table
-        const devTable = document.getElementById('devicesTable');
-        const devRows = data.devices.map(d =>
-          '<tr data-device><td class="dev-name">' + d.name + '</td>' +
-          '<td class="dev-lastseen">' + d.lastSeenFormatted +
-          (d.timeSince ? ' (' + d.timeSince + ')' : '') + '</td></tr>'
-        ).join('') || '<tr><td colspan=2>No devices registered</td></tr>';
-        devTable.innerHTML = '<tr><th>Name</th><th>Last Check-in</th></tr>' + devRows;
+              return '<div class="device-card" data-token="' + d.token + '">' +
+                '<div class="device-header">' +
+                  '<span class="device-name">' + d.name + '</span>' +
+                  '<span class="device-seen">Last seen: ' + lastSeen + '</span>' +
+                '</div>' +
+                (d.metrics ? (
+                  '<div class="metrics-grid">' +
+                    '<div class="metric-card"><div class="metric-value ' + gaugeClass(cpuPct) + '">' + Math.round(cpuPct) + '%</div><div class="metric-label">CPU</div></div>' +
+                    '<div class="metric-card"><div class="metric-value ' + gaugeClass(memPct) + '">' + Math.round(memPct) + '%</div><div class="metric-label">Memory</div></div>' +
+                    '<div class="metric-card"><div class="metric-value ' + gaugeClass(diskPct) + '">' + Math.round(diskPct) + '%</div><div class="metric-label">Disk</div></div>' +
+                  '</div>' +
+                  '<div class="status-row">' +
+                    '<div class="status-card">' +
+                      '<div class="status-title">NEVERHANG</div>' +
+                      '<div class="status-main circuit-' + (nev.circuit || 'closed') + '">' + (nev.circuit || 'closed').toUpperCase() + '</div>' +
+                      '<div class="status-detail">' + (nev.failures || 0) + ' failures • ' + (nev.recoveries || 0) + ' recoveries</div>' +
+                    '</div>' +
+                    '<div class="status-card">' +
+                      '<div class="status-title">A.L.A.N.</div>' +
+                      '<div class="status-main">' + (alan.queries_24h || 0) + ' queries</div>' +
+                      '<div class="status-detail">' + Math.round((alan.success_rate_24h || 1) * 100) + '% success rate</div>' +
+                    '</div>' +
+                  '</div>'
+                ) : '<p class="awaiting">Awaiting metrics...</p>') +
+              '</div>';
+            }).join('');
 
         // Update events table
         const evtTable = document.getElementById('eventsTable');
@@ -385,7 +552,6 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Start countdown timer
     setInterval(updateCountdown, 1000);
   </script>
 </body>

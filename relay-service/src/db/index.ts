@@ -96,6 +96,18 @@ export function initDatabase(): void {
       FOREIGN KEY (device_token) REFERENCES devices(token)
     );
 
+    -- RRD historical data (pushed from MCP)
+    CREATE TABLE IF NOT EXISTS rrd_data (
+      id INTEGER PRIMARY KEY,
+      device_token TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      period TEXT NOT NULL,
+      data_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (device_token) REFERENCES devices(token),
+      UNIQUE(device_token, metric, period)
+    );
+
     -- Indexes
     CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_token);
     CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
@@ -105,6 +117,8 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_alerts_device ON alert_history(device_token);
     CREATE INDEX IF NOT EXISTS idx_metrics_device ON metrics(device_token);
     CREATE INDEX IF NOT EXISTS idx_metrics_created ON metrics(created_at);
+    CREATE INDEX IF NOT EXISTS idx_rrd_device ON rrd_data(device_token);
+    CREATE INDEX IF NOT EXISTS idx_rrd_metric ON rrd_data(metric);
   `);
 
   // Run cleanup on startup
@@ -487,3 +501,63 @@ export function getMetricsHistory(deviceToken: string, limit: number = 60): Arra
 
 // Schedule cleanup every hour
 setInterval(cleanupExpired, 60 * 60 * 1000);
+
+// =============================================================================
+// RRD HISTORICAL DATA
+// =============================================================================
+
+export interface RrdData {
+  id: number;
+  device_token: string;
+  metric: string;
+  period: string;
+  data_json: string;
+  created_at: number;
+}
+
+export function storeRrdData(deviceToken: string, metric: string, period: string, data: object): RrdData {
+  const now = Date.now();
+
+  // Upsert: replace existing data for same device/metric/period
+  db.prepare(`
+    DELETE FROM rrd_data WHERE device_token = ? AND metric = ? AND period = ?
+  `).run(deviceToken, metric, period);
+
+  const stmt = db.prepare(`
+    INSERT INTO rrd_data (device_token, metric, period, data_json, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    RETURNING *
+  `);
+
+  return stmt.get(deviceToken, metric, period, JSON.stringify(data), now) as RrdData;
+}
+
+export function getRrdData(deviceToken: string, metric?: string): RrdData[] {
+  if (metric) {
+    return db.prepare(`
+      SELECT * FROM rrd_data
+      WHERE device_token = ? AND metric = ?
+      ORDER BY created_at DESC
+    `).all(deviceToken, metric) as RrdData[];
+  }
+
+  return db.prepare(`
+    SELECT * FROM rrd_data
+    WHERE device_token = ?
+    ORDER BY metric, period
+  `).all(deviceToken) as RrdData[];
+}
+
+export function getAllRrdSummary(): Array<{ device_token: string; metrics: string[]; updated_at: string }> {
+  const rows = db.prepare(`
+    SELECT device_token, GROUP_CONCAT(DISTINCT metric) as metrics, MAX(created_at) as updated_at
+    FROM rrd_data
+    GROUP BY device_token
+  `).all() as Array<{ device_token: string; metrics: string; updated_at: number }>;
+
+  return rows.map((row) => ({
+    device_token: row.device_token,
+    metrics: row.metrics ? row.metrics.split(",") : [],
+    updated_at: new Date(row.updated_at).toISOString(),
+  }));
+}

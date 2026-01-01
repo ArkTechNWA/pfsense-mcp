@@ -108,6 +108,15 @@ export function initDatabase(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_history_executed ON api_history(executed_at);
     CREATE INDEX IF NOT EXISTS idx_health_checked ON health_checks(checked_at);
     CREATE INDEX IF NOT EXISTS idx_history_complexity ON api_history(complexity);
+
+    -- RRD data cache (reduces pfSense load for repeated queries)
+    CREATE TABLE IF NOT EXISTS rrd_cache (
+      metric TEXT NOT NULL,
+      period TEXT NOT NULL,
+      data TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (metric, period)
+    );
   `);
 
   // Ensure singleton circuit state row exists
@@ -346,4 +355,57 @@ export function getDatabaseStats(db: Database.Database): DatabaseStats {
 export function closeDatabase(db: Database.Database): void {
   db.close();
   console.error("[ALAN] Database closed");
+}
+
+// ==========================================================================
+// RRD CACHE FUNCTIONS
+// ==========================================================================
+
+const RRD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+export interface RrdCacheRow {
+  metric: string;
+  period: string;
+  data: string;
+  fetched_at: number;
+}
+
+/**
+ * Get cached RRD data if fresh
+ */
+export function getRrdCache(
+  db: Database.Database,
+  metric: string,
+  period: string
+): RrdCacheRow | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM rrd_cache WHERE metric = ? AND period = ? AND fetched_at > ?`
+    )
+    .get(metric, period, Date.now() - RRD_CACHE_TTL_MS) as RrdCacheRow | undefined;
+
+  return row || null;
+}
+
+/**
+ * Store RRD data in cache
+ */
+export function setRrdCache(
+  db: Database.Database,
+  metric: string,
+  period: string,
+  data: string
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO rrd_cache (metric, period, data, fetched_at)
+     VALUES (?, ?, ?, ?)`
+  ).run(metric, period, data, Date.now());
+}
+
+/**
+ * Clean up old RRD cache entries (older than 1 hour)
+ */
+export function cleanupRrdCache(db: Database.Database): void {
+  const hourAgo = Date.now() - 60 * 60 * 1000;
+  db.prepare(`DELETE FROM rrd_cache WHERE fetched_at < ?`).run(hourAgo);
 }

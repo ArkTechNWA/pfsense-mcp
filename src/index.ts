@@ -16,7 +16,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type Database from "better-sqlite3";
 
-import { initDatabase, closeDatabase } from "./db.js";
+import { initDatabase, closeDatabase, getRrdCache, setRrdCache } from "./db.js";
 import { NeverhangManager, NeverhangError } from "./neverhang.js";
 import { PfSenseClient } from "./pfsense-client.js";
 import { TOOLS } from "./tools/index.js";
@@ -378,6 +378,101 @@ async function executeToolInner(
         hostname: e.hostname,
         type: e.type,
       }));
+    }
+
+    // ========================================================================
+    // RRD HISTORICAL DATA
+    // ========================================================================
+    case "pf_rrd": {
+      const metric = args.metric as string;
+      const period = (args.period as string) || "1h";
+
+      if (!metric) throw new Error("metric parameter required");
+
+      // Check A.L.A.N. cache first
+      const cached = getRrdCache(db, metric, period);
+      if (cached) {
+        console.error(`[RRD] Cache hit: ${metric}/${period}`);
+        return JSON.parse(cached.data);
+      }
+
+      // Map metric to RRD file and column selection
+      const metricMap: Record<string, { file: string; cols: string[] }> = {
+        cpu: { file: "system-processor.rrd", cols: ["user", "system", "interrupt"] },
+        memory: { file: "system-memory.rrd", cols: ["active", "inactive", "free", "cache", "wired"] },
+        states: { file: "system-states.rrd", cols: ["pfstates"] },
+        traffic_lan: { file: "lan-traffic.rrd", cols: ["inpass", "outpass"] },
+        traffic_wan: { file: "wan-traffic.rrd", cols: ["inpass", "outpass"] },
+        gateway_quality: { file: "WAN_DHCP-quality.rrd", cols: ["loss", "delay"] },
+      };
+
+      const config = metricMap[metric];
+      if (!config) {
+        throw new Error(`Unknown metric: ${metric}. Available: ${Object.keys(metricMap).join(", ")}`);
+      }
+
+      // Map period to rrdtool time spec
+      const periodMap: Record<string, string> = {
+        "1h": "end-1h",
+        "4h": "end-4h",
+        "1d": "end-1d",
+        "1w": "end-1w",
+        "1m": "end-1m",
+      };
+
+      const timeSpec = periodMap[period];
+      if (!timeSpec) throw new Error(`Unknown period: ${period}`);
+
+      // Fetch from pfSense via rrdtool
+      console.error(`[RRD] Fetching ${metric}/${period} from pfSense...`);
+      const cmdResponse = await client.runCommand(
+        `rrdtool fetch /var/db/rrd/${config.file} AVERAGE --start ${timeSpec}`
+      );
+
+      const output = cmdResponse.data?.output || "";
+      if (!output) throw new Error("No data returned from rrdtool");
+
+      // Parse rrdtool output
+      const lines = output.trim().split("\n");
+      const headerLine = lines.find((l) => l.includes(":") === false && l.trim().length > 0);
+      const dataLines = lines.filter((l) => l.includes(":") && !l.includes("nan nan nan"));
+
+      // Parse header (column names)
+      const headers = headerLine?.trim().split(/\s+/) || config.cols;
+
+      // Parse data points
+      const dataPoints: Array<{ timestamp: number; values: Record<string, number> }> = [];
+      for (const line of dataLines) {
+        const [tsStr, ...valStrs] = line.trim().split(/\s+/);
+        const timestamp = parseInt(tsStr.replace(":", ""), 10);
+
+        const values: Record<string, number> = {};
+        headers.forEach((col, i) => {
+          const val = parseFloat(valStrs[i]);
+          if (!isNaN(val)) values[col] = val;
+        });
+
+        if (Object.keys(values).length > 0) {
+          dataPoints.push({ timestamp, values });
+        }
+      }
+
+      // Build result
+      const result = {
+        metric,
+        period,
+        file: config.file,
+        columns: headers,
+        data_points: dataPoints.length,
+        data: dataPoints,
+        fetched_at: Date.now(),
+      };
+
+      // Store in A.L.A.N. cache
+      setRrdCache(db, metric, period, JSON.stringify(result));
+      console.error(`[RRD] Cached ${metric}/${period}: ${dataPoints.length} points`);
+
+      return result;
     }
 
     // ========================================================================

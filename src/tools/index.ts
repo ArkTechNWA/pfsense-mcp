@@ -236,6 +236,32 @@ export const TOOLS: Tool[] = [
       required: [],
     },
   },
+
+  // ==========================================================================
+  // RRD HISTORICAL DATA
+  // ==========================================================================
+  {
+    name: "pf_rrd",
+    description:
+      "Get historical RRD data from pfSense. Returns time-series data for CPU, memory, " +
+      "disk, traffic, and other metrics. Data is cached in A.L.A.N. for 5 minutes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        metric: {
+          type: "string",
+          enum: ["cpu", "memory", "traffic_lan", "traffic_wan", "states", "gateway_quality"],
+          description: "Which metric to fetch",
+        },
+        period: {
+          type: "string",
+          enum: ["1h", "4h", "1d", "1w", "1m"],
+          description: "Time period (default: 1h)",
+        },
+      },
+      required: ["metric"],
+    },
+  },
   // ==========================================================================
   // GUARDIAN RELAY (Emergency Monitoring)
   // ==========================================================================

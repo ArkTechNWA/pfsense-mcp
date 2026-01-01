@@ -104,4 +104,55 @@ router.get("/api/admin/metrics", requireAdminKey, (req: Request, res: Response) 
   });
 });
 
+// =============================================================================
+// RRD HISTORICAL DATA
+// =============================================================================
+
+// POST /api/admin/rrd - Push RRD data from MCP
+router.post("/api/admin/rrd", requireAdminKey, (req: Request, res: Response) => {
+  const { device_token, metric, period, data } = req.body;
+
+  if (!device_token || !metric || !period || !data) {
+    res.status(400).json({ error: "device_token, metric, period, and data required" });
+    return;
+  }
+
+  // Store RRD data (upserts by device/metric/period)
+  db.storeRrdData(device_token, metric, period, data);
+
+  res.json({ success: true, stored_at: new Date().toISOString() });
+});
+
+// GET /api/admin/rrd/:token - Get RRD data for a device
+router.get("/api/admin/rrd/:token", requireAdminKey, (req: Request, res: Response) => {
+  const metric = req.query.metric as string | undefined;
+  const rrdData = db.getRrdData(req.params.token, metric);
+
+  if (rrdData.length === 0) {
+    res.status(404).json({ error: "No RRD data found for device" });
+    return;
+  }
+
+  res.json({
+    device_token: req.params.token,
+    count: rrdData.length,
+    data: rrdData.map((r) => ({
+      metric: r.metric,
+      period: r.period,
+      data: JSON.parse(r.data_json),
+      updated_at: new Date(r.created_at).toISOString(),
+    })),
+  });
+});
+
+// GET /api/admin/rrd - Get summary of all RRD data
+router.get("/api/admin/rrd", requireAdminKey, (req: Request, res: Response) => {
+  const summary = db.getAllRrdSummary();
+
+  res.json({
+    count: summary.length,
+    devices: summary,
+  });
+});
+
 export default router;
