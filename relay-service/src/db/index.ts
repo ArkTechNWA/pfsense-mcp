@@ -108,6 +108,14 @@ export function initDatabase(): void {
       UNIQUE(device_token, metric, period)
     );
 
+    -- Dashboard sessions (persistent across restarts)
+    CREATE TABLE IF NOT EXISTS dashboard_sessions (
+      session_id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
     -- Indexes
     CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_token);
     CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
@@ -119,6 +127,7 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_metrics_created ON metrics(created_at);
     CREATE INDEX IF NOT EXISTS idx_rrd_device ON rrd_data(device_token);
     CREATE INDEX IF NOT EXISTS idx_rrd_metric ON rrd_data(metric);
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires ON dashboard_sessions(expires_at);
   `);
 
   // Run cleanup on startup
@@ -135,8 +144,9 @@ export function cleanupExpired(): number {
   const diags = db.prepare("DELETE FROM diagnostics WHERE expires_at < ?").run(now);
   const cmds = db.prepare("DELETE FROM pending_commands WHERE expires_at < ?").run(now);
   const alerts = db.prepare("DELETE FROM alert_history WHERE expires_at < ?").run(now);
+  const sessions = db.prepare("DELETE FROM dashboard_sessions WHERE expires_at < ?").run(now);
 
-  const total = events.changes + diags.changes + cmds.changes + alerts.changes;
+  const total = events.changes + diags.changes + cmds.changes + alerts.changes + sessions.changes;
   if (total > 0) {
     console.log(`[DB] Cleaned up ${total} expired records`);
   }
@@ -560,4 +570,38 @@ export function getAllRrdSummary(): Array<{ device_token: string; metrics: strin
     metrics: row.metrics ? row.metrics.split(",") : [],
     updated_at: new Date(row.updated_at).toISOString(),
   }));
+}
+
+// =============================================================================
+// DASHBOARD SESSION OPERATIONS (persistent across restarts)
+// =============================================================================
+
+export interface DashboardSession {
+  session_id: string;
+  email: string;
+  expires_at: number;
+  created_at: number;
+}
+
+export function createSession(sessionId: string, email: string, expiresAt: number): DashboardSession {
+  const now = Date.now();
+
+  const stmt = db.prepare(`
+    INSERT INTO dashboard_sessions (session_id, email, expires_at, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      email = excluded.email,
+      expires_at = excluded.expires_at
+    RETURNING *
+  `);
+
+  return stmt.get(sessionId, email, expiresAt, now) as DashboardSession;
+}
+
+export function getSession(sessionId: string): DashboardSession | null {
+  return db.prepare("SELECT * FROM dashboard_sessions WHERE session_id = ?").get(sessionId) as DashboardSession | null;
+}
+
+export function deleteSession(sessionId: string): void {
+  db.prepare("DELETE FROM dashboard_sessions WHERE session_id = ?").run(sessionId);
 }

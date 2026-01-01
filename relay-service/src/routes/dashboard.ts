@@ -13,9 +13,9 @@ import * as alerter from "../alerter";
 
 const router = Router();
 
-// In-memory token store (ephemeral - clears on restart)
+// In-memory token store (ephemeral - clears on restart, but that's OK for magic links)
 const authTokens = new Map<string, { email: string; expires: number; sessionDuration: number }>();
-const sessions = new Map<string, { email: string; expires: number }>();
+// Sessions are now stored in SQLite - see db.createSession/getSession/deleteSession
 
 const TOKEN_EXPIRY = 60 * 60 * 1000;  // 1 hour for magic links
 
@@ -83,10 +83,10 @@ router.get("/auth/verify", (req: Request, res: Response) => {
     return res.redirect("/dashboard/login?error=expired");
   }
 
-  // Create session with user-selected duration
+  // Create session with user-selected duration (stored in SQLite)
   const sessionId = crypto.randomBytes(32).toString("hex");
   const sessionExpiry = Date.now() + auth.sessionDuration;
-  sessions.set(sessionId, { email: auth.email, expires: sessionExpiry });
+  db.createSession(sessionId, auth.email, sessionExpiry);
   authTokens.delete(token as string);
 
   // Set cookie and redirect
@@ -102,10 +102,10 @@ router.get("/auth/verify", (req: Request, res: Response) => {
 // Auth middleware
 function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const sessionId = req.cookies?.pfsense_session;
-  const session = sessions.get(sessionId);
+  const session = db.getSession(sessionId);
 
-  if (!session || Date.now() > session.expires) {
-    sessions.delete(sessionId);
+  if (!session || Date.now() > session.expires_at) {
+    db.deleteSession(sessionId);
     return res.redirect("/dashboard/login");
   }
 
@@ -116,10 +116,10 @@ function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
 // API auth middleware (returns JSON instead of redirect)
 function requireAuthAPI(req: AuthRequest, res: Response, next: NextFunction) {
   const sessionId = req.cookies?.pfsense_session;
-  const session = sessions.get(sessionId);
+  const session = db.getSession(sessionId);
 
-  if (!session || Date.now() > session.expires) {
-    sessions.delete(sessionId);
+  if (!session || Date.now() > session.expires_at) {
+    db.deleteSession(sessionId);
     return res.status(401).json({ error: "unauthorized" });
   }
 
@@ -736,7 +736,7 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
 // Logout
 router.get("/auth/logout", (req: Request, res: Response) => {
   const sessionId = req.cookies?.pfsense_session;
-  sessions.delete(sessionId);
+  db.deleteSession(sessionId);
   res.clearCookie("pfsense_session");
   res.redirect("/dashboard/login");
 });
