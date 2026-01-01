@@ -87,6 +87,15 @@ export function initDatabase(): void {
       UNIQUE(device_token, alert_hash)
     );
 
+    -- Live metrics from MCP (NEVERHANG + A.L.A.N. + system stats)
+    CREATE TABLE IF NOT EXISTS metrics (
+      id INTEGER PRIMARY KEY,
+      device_token TEXT NOT NULL,
+      metrics_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (device_token) REFERENCES devices(token)
+    );
+
     -- Indexes
     CREATE INDEX IF NOT EXISTS idx_events_device ON events(device_token);
     CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
@@ -94,6 +103,8 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_commands_device ON pending_commands(device_token);
     CREATE INDEX IF NOT EXISTS idx_commands_status ON pending_commands(status);
     CREATE INDEX IF NOT EXISTS idx_alerts_device ON alert_history(device_token);
+    CREATE INDEX IF NOT EXISTS idx_metrics_device ON metrics(device_token);
+    CREATE INDEX IF NOT EXISTS idx_metrics_created ON metrics(created_at);
   `);
 
   // Run cleanup on startup
@@ -349,6 +360,129 @@ export function closeDatabase(): void {
   if (db) {
     db.close();
   }
+}
+
+// =============================================================================
+// ADMIN QUERIES
+// =============================================================================
+
+export function getAllDevices(): Device[] {
+  return db.prepare("SELECT * FROM devices ORDER BY last_seen_at DESC").all() as Device[];
+}
+
+export function getDevicesByEmail(email: string): Device[] {
+  return db.prepare("SELECT * FROM devices WHERE email = ? ORDER BY last_seen_at DESC").all(email) as Device[];
+}
+
+export function getAllRecentEvents(limit: number = 50): Event[] {
+  const now = Date.now();
+  return db.prepare(`
+    SELECT * FROM events
+    WHERE expires_at > ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(now, limit) as Event[];
+}
+
+export function getRecentEventsByEmail(email: string, limit: number = 20): Event[] {
+  const now = Date.now();
+  return db.prepare(`
+    SELECT e.* FROM events e
+    JOIN devices d ON e.device_token = d.token
+    WHERE d.email = ? AND e.expires_at > ?
+    ORDER BY e.created_at DESC
+    LIMIT ?
+  `).all(email, now, limit) as Event[];
+}
+
+// =============================================================================
+// METRICS OPERATIONS
+// =============================================================================
+
+export interface Metrics {
+  id: number;
+  device_token: string;
+  metrics_json: string;
+  created_at: number;
+}
+
+export function storeMetrics(deviceToken: string, metrics: object): Metrics {
+  const now = Date.now();
+
+  // Auto-create device if it doesn't exist (for MCP-pushed metrics)
+  const existingDevice = db.prepare("SELECT token FROM devices WHERE token = ?").get(deviceToken);
+  if (!existingDevice) {
+    db.prepare(`
+      INSERT INTO devices (token, email, api_key_encrypted, created_at, name)
+      VALUES (?, 'mcp-auto@local', 'none', ?, ?)
+    `).run(deviceToken, now, deviceToken.substring(0, 20));
+  }
+
+  // Keep only last 100 metrics per device
+  db.prepare(`
+    DELETE FROM metrics WHERE device_token = ? AND id NOT IN (
+      SELECT id FROM metrics WHERE device_token = ? ORDER BY created_at DESC LIMIT 99
+    )
+  `).run(deviceToken, deviceToken);
+
+  const stmt = db.prepare(`
+    INSERT INTO metrics (device_token, metrics_json, created_at)
+    VALUES (?, ?, ?)
+    RETURNING *
+  `);
+
+  return stmt.get(deviceToken, JSON.stringify(metrics), now) as Metrics;
+}
+
+export function getLatestMetrics(deviceToken: string): { device_token: string; metrics: object; updated_at: string } | null {
+  const row = db.prepare(`
+    SELECT * FROM metrics
+    WHERE device_token = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(deviceToken) as Metrics | undefined;
+
+  if (!row) return null;
+
+  return {
+    device_token: row.device_token,
+    metrics: JSON.parse(row.metrics_json),
+    updated_at: new Date(row.created_at).toISOString(),
+  };
+}
+
+export function getAllLatestMetrics(): Array<{ device_token: string; device_name: string | null; metrics: object; updated_at: string }> {
+  // Get latest metrics for each device
+  const rows = db.prepare(`
+    SELECT m.*, d.name as device_name
+    FROM metrics m
+    JOIN devices d ON m.device_token = d.token
+    WHERE m.id IN (
+      SELECT MAX(id) FROM metrics GROUP BY device_token
+    )
+    ORDER BY m.created_at DESC
+  `).all() as Array<Metrics & { device_name: string | null }>;
+
+  return rows.map((row) => ({
+    device_token: row.device_token,
+    device_name: row.device_name,
+    metrics: JSON.parse(row.metrics_json),
+    updated_at: new Date(row.created_at).toISOString(),
+  }));
+}
+
+export function getMetricsHistory(deviceToken: string, limit: number = 60): Array<{ metrics: object; created_at: number }> {
+  const rows = db.prepare(`
+    SELECT metrics_json, created_at FROM metrics
+    WHERE device_token = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(deviceToken, limit) as Array<{ metrics_json: string; created_at: number }>;
+
+  return rows.map((row) => ({
+    metrics: JSON.parse(row.metrics_json),
+    created_at: row.created_at,
+  }));
 }
 
 // Schedule cleanup every hour

@@ -86,7 +86,50 @@ async function executeToolInner(
         // Ping failed, already recorded
       }
 
-      return {
+      // Get system status for dashboard
+      let systemData: Record<string, unknown> = {};
+      try {
+        const sysResponse = await client.getSystemStatus();
+        const sysRaw = sysResponse.data as unknown as Record<string, unknown>;
+        if (sysRaw) {
+          systemData = {
+            uptime: sysRaw.uptime ?? null,
+            platform: sysRaw.platform ?? null,
+            cpu: {
+              model: sysRaw.cpu_model ?? null,
+              count: sysRaw.cpu_count ?? null,
+              usage_percent: sysRaw.cpu_usage ?? null,
+              temperature_c: sysRaw.temp_c ?? null,
+            },
+            memory: { usage_percent: sysRaw.mem_usage ?? null },
+            disk: { usage_percent: sysRaw.disk_usage ?? null },
+          };
+        }
+      } catch {
+        // System status failed, continue without it
+      }
+
+      // Get interface data
+      let interfaceData: Record<string, unknown> = {};
+      try {
+        const ifResponse = await client.getInterfaceStatuses();
+        const ifList = (ifResponse.data || []) as unknown as Array<Record<string, unknown>>;
+        for (const iface of ifList) {
+          const name = (iface.name || iface.descr || 'unknown') as string;
+          interfaceData[name.toLowerCase()] = {
+            status: iface.status,
+            ipaddr: iface.ipaddr,
+            inbytes: iface.inbytes,
+            outbytes: iface.outbytes,
+            inpkts: iface.inpkts,
+            outpkts: iface.outpkts,
+          };
+        }
+      } catch {
+        // Interface status failed, continue without it
+      }
+
+      const healthData = {
         pfsense: {
           reachable: pingResult.ok,
           latency_ms: pingResult.latency_ms,
@@ -110,7 +153,29 @@ async function executeToolInner(
               health_trend: alanStats.health_trend,
             }
           : null,
+        system: systemData,
+        interfaces: interfaceData,
       };
+
+      // Push metrics to Guardian relay (fire and forget)
+      if (GUARDIAN_ADMIN_KEY && GUARDIAN_RELAY_URL) {
+        const deviceToken = process.env.PFSENSE_DEVICE_TOKEN || "default";
+        fetch(`${GUARDIAN_RELAY_URL}/api/admin/metrics`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Admin-Key": GUARDIAN_ADMIN_KEY,
+          },
+          body: JSON.stringify({
+            device_token: deviceToken,
+            metrics: healthData,
+          }),
+        }).catch(() => {
+          // Silently fail - don't break health check for relay issues
+        });
+      }
+
+      return healthData;
     }
 
     // ========================================================================
