@@ -126,30 +126,27 @@ async function executeToolInner(
       const data = response.data as unknown as Record<string, unknown>;
       if (!data) return { error: "No data returned" };
 
-      // Handle varying API response structures defensively
-      const cpu = data.cpu as Record<string, unknown> | undefined;
-      const memory = data.memory as Record<string, unknown> | undefined;
-      const disk = data.disk as Record<string, unknown> | undefined;
-
+      // v2 API returns flat structure, not nested
       return {
-        uptime_seconds: data.uptime ?? null,
-        uptime_human: typeof data.uptime === "number" ? formatUptime(data.uptime) : null,
-        datetime: data.datetime ?? null,
-        cpu: cpu ? {
-          usage_percent: cpu.usage ?? null,
-          temperature_c: cpu.temperature ?? null,
-        } : null,
-        memory: memory ? {
-          total_mb: typeof memory.total === "number" ? Math.round(memory.total / 1024 / 1024) : null,
-          used_mb: typeof memory.used === "number" ? Math.round(memory.used / 1024 / 1024) : null,
-          usage_percent: memory.usage ?? null,
-        } : null,
-        disk: disk ? {
-          total_gb: typeof disk.total === "number" ? Math.round(disk.total / 1024 / 1024 / 1024) : null,
-          used_gb: typeof disk.used === "number" ? Math.round(disk.used / 1024 / 1024 / 1024) : null,
-          usage_percent: disk.usage ?? null,
-        } : null,
-        _raw_keys: Object.keys(data),  // Debug: show what fields API actually returns
+        uptime: data.uptime ?? null,
+        platform: data.platform ?? null,
+        cpu: {
+          model: data.cpu_model ?? null,
+          count: data.cpu_count ?? null,
+          usage_percent: data.cpu_usage ?? null,
+          load_avg: data.cpu_load_avg ?? null,
+          temperature_c: data.temp_c ?? null,
+        },
+        memory: {
+          usage_percent: data.mem_usage ?? null,
+        },
+        swap: {
+          usage_percent: data.swap_usage ?? null,
+        },
+        disk: {
+          usage_percent: data.disk_usage ?? null,
+        },
+        mbuf_usage: data.mbuf_usage ?? null,
       };
     }
 
@@ -164,8 +161,16 @@ async function executeToolInner(
     case "pf_interface_status": {
       const iface = args.interface as string;
       if (!iface) throw new Error("interface parameter required");
-      const response = await client.getInterfaceStatus(iface);
-      return response.data;
+      const response = await client.getInterfaceStatuses();
+      const statuses = (response.data || []) as unknown as Array<Record<string, unknown>>;
+      // Find by interface name (wan, lan) or device name (mvneta0, igb0)
+      const match = statuses.find((s) =>
+        s.name === iface || s.if === iface || s.descr === iface
+      );
+      if (!match) {
+        throw new Error(`Interface '${iface}' not found. Available: ${statuses.map((s) => s.name || s.descr).join(', ')}`);
+      }
+      return match;
     }
 
     // ========================================================================

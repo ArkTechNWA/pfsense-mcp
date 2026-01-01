@@ -230,9 +230,9 @@ export class PfSenseClient {
     return this.get<InterfaceInfo[]>("/interfaces");
   }
 
-  async getInterfaceStatus(iface: string): Promise<ApiResponse<InterfaceStatus>> {
-    // v2 API: get specific interface by path parameter
-    return this.get<InterfaceStatus>(`/interface/${iface}`);
+  async getInterfaceStatuses(): Promise<ApiResponse<InterfaceStatus[]>> {
+    // v2 API: get all interface statuses (traffic stats, up/down, etc)
+    return this.get<InterfaceStatus[]>("/status/interfaces");
   }
 
   // ==========================================================================
