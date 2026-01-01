@@ -111,72 +111,80 @@ app.get("/dashboard", (req, res) => {
       const memPct = system.memory?.usage_percent || 0;
       const diskPct = system.disk?.usage_percent || 0;
 
-      metricsHtml += `
-    <div class="card ${healthClass}">
-      <h2>NEVERHANG • ${deviceName}</h2>
-      <div style="margin-bottom: 16px;">
-        <span class="circuit ${circuitClass}">${circuitClass.toUpperCase()}</span>
-      </div>
-      <div class="metric"><span class="metric-label">Status</span><span class="metric-value">${neverhang.status || 'unknown'}</span></div>
-      <div class="metric"><span class="metric-label">Latency P95</span><span class="metric-value">${neverhang.latency_p95_ms || 0}ms</span></div>
-      <div class="metric"><span class="metric-label">Recent Failures</span><span class="metric-value ${(neverhang.recent_failures || 0) > 0 ? 'bad' : 'good'}">${neverhang.recent_failures || 0}</span></div>
-      <div class="metric"><span class="metric-label">Uptime</span><span class="metric-value good">${neverhang.uptime_percent || 100}%</span></div>
-    </div>
-
-    <div class="card neutral">
-      <h2>A.L.A.N. • Learning</h2>
-      <div class="big-number">${alan.success_rate_24h || '—'}</div>
-      <div class="big-label">Success Rate (24h)</div>
-      <div class="metric" style="margin-top: 16px;"><span class="metric-label">Queries (24h)</span><span class="metric-value">${alan.queries_24h || 0}</span></div>
-    </div>
-
-    <div class="card neutral">
-      <h2>System • ${deviceName}</h2>
-      <div class="metric">
-        <span class="metric-label">CPU</span>
-        <span class="metric-value ${gaugeClass(cpuPct)}">${cpuPct}%</span>
-      </div>
-      <div class="gauge"><div class="gauge-fill ${gaugeClass(cpuPct)}" style="width: ${cpuPct}%"></div></div>
-
-      <div class="metric" style="margin-top: 12px;">
-        <span class="metric-label">Memory</span>
-        <span class="metric-value ${gaugeClass(memPct)}">${memPct}%</span>
-      </div>
-      <div class="gauge"><div class="gauge-fill ${gaugeClass(memPct)}" style="width: ${memPct}%"></div></div>
-
-      <div class="metric" style="margin-top: 12px;">
-        <span class="metric-label">Disk</span>
-        <span class="metric-value ${gaugeClass(diskPct)}">${diskPct}%</span>
-      </div>
-      <div class="gauge"><div class="gauge-fill ${gaugeClass(diskPct)}" style="width: ${diskPct}%"></div></div>
-
-      <div class="metric" style="margin-top: 12px;"><span class="metric-label">Uptime</span><span class="metric-value">${system.uptime || 'unknown'}</span></div>
-      <div class="metric"><span class="metric-label">Platform</span><span class="metric-value">${system.platform || 'unknown'}</span></div>
-    </div>`;
-
-      // Interface card if present
+      // Interface card HTML (built first so we can include it in cartouche)
+      let ifaceHtml = '';
       if (metrics.interfaces) {
-        let ifaceHtml = '';
+        let ifaceRows = '';
         for (const [name, iface] of Object.entries(metrics.interfaces)) {
           const i = iface as any;
-          ifaceHtml += `
-        <div class="device-row">
-          <div>
-            <div class="device-name">${name.toUpperCase()}</div>
-            <div class="device-seen">${i.ipaddr || 'no ip'} • ${i.status || 'unknown'}</div>
-          </div>
-          <div style="text-align: right; font-size: 11px; color: #666;">
-            ↓ ${formatBytes(i.inbytes || 0)}<br>
-            ↑ ${formatBytes(i.outbytes || 0)}
-          </div>
-        </div>`;
+          ifaceRows += `
+          <div class="device-row">
+            <div>
+              <div class="device-name">${name.toUpperCase()}</div>
+              <div class="device-seen">${i.ipaddr || 'no ip'} • ${i.status || 'unknown'}</div>
+            </div>
+            <div style="text-align: right; font-size: 11px; color: #666;">
+              ↓ ${formatBytes(i.inbytes || 0)}<br>
+              ↑ ${formatBytes(i.outbytes || 0)}
+            </div>
+          </div>`;
         }
-        metricsHtml += `
-    <div class="card neutral">
-      <h2>Interfaces</h2>
-      ${ifaceHtml}
-    </div>`;
+        ifaceHtml = `
+        <div class="card neutral">
+          <h2>Interfaces</h2>
+          ${ifaceRows}
+        </div>`;
       }
+
+      metricsHtml += `
+    <div class="cartouche ${healthClass}">
+      <div class="cartouche-header">${deviceName}</div>
+      <div class="cartouche-grid">
+        <div class="card ${healthClass}">
+          <h2>NEVERHANG</h2>
+          <div style="margin-bottom: 16px;">
+            <span class="circuit ${circuitClass}">${circuitClass.toUpperCase()}</span>
+          </div>
+          <div class="metric"><span class="metric-label">Status</span><span class="metric-value">${neverhang.status || 'unknown'}</span></div>
+          <div class="metric"><span class="metric-label">Latency P95</span><span class="metric-value">${neverhang.latency_p95_ms || 0}ms</span></div>
+          <div class="metric"><span class="metric-label">Recent Failures</span><span class="metric-value ${(neverhang.recent_failures || 0) > 0 ? 'bad' : 'good'}">${neverhang.recent_failures || 0}</span></div>
+          <div class="metric"><span class="metric-label">Uptime</span><span class="metric-value good">${neverhang.uptime_percent || 100}%</span></div>
+        </div>
+
+        <div class="card neutral">
+          <h2>A.L.A.N.</h2>
+          <div class="big-number">${alan.success_rate_24h || '—'}</div>
+          <div class="big-label">Success Rate (24h)</div>
+          <div class="metric" style="margin-top: 16px;"><span class="metric-label">Queries (24h)</span><span class="metric-value">${alan.queries_24h || 0}</span></div>
+        </div>
+
+        <div class="card neutral">
+          <h2>System</h2>
+          <div class="metric">
+            <span class="metric-label">CPU</span>
+            <span class="metric-value ${gaugeClass(cpuPct)}">${cpuPct}%</span>
+          </div>
+          <div class="gauge"><div class="gauge-fill ${gaugeClass(cpuPct)}" style="width: ${cpuPct}%"></div></div>
+
+          <div class="metric" style="margin-top: 12px;">
+            <span class="metric-label">Memory</span>
+            <span class="metric-value ${gaugeClass(memPct)}">${memPct}%</span>
+          </div>
+          <div class="gauge"><div class="gauge-fill ${gaugeClass(memPct)}" style="width: ${memPct}%"></div></div>
+
+          <div class="metric" style="margin-top: 12px;">
+            <span class="metric-label">Disk</span>
+            <span class="metric-value ${gaugeClass(diskPct)}">${diskPct}%</span>
+          </div>
+          <div class="gauge"><div class="gauge-fill ${gaugeClass(diskPct)}" style="width: ${diskPct}%"></div></div>
+
+          <div class="metric" style="margin-top: 12px;"><span class="metric-label">Uptime</span><span class="metric-value">${system.uptime || 'unknown'}</span></div>
+          <div class="metric"><span class="metric-label">Platform</span><span class="metric-value">${system.platform || 'unknown'}</span></div>
+        </div>
+
+        ${ifaceHtml}
+      </div>
+    </div>`;
     }
   } else {
     metricsHtml = `
@@ -229,6 +237,16 @@ app.get("/dashboard", (req, res) => {
     .card.degraded h2::before { background: #ffaa00; box-shadow: 0 0 8px #ffaa00; }
     .card.unhealthy h2::before { background: #ff4444; box-shadow: 0 0 8px #ff4444; }
     .card.neutral h2::before { background: #00d9ff; box-shadow: 0 0 8px #00d9ff; }
+
+    .cartouche { grid-column: 1 / -1; background: #0d0d14; border: 1px solid #1a1a2a; border-radius: 16px; padding: 20px; }
+    .cartouche.healthy { border-color: rgba(0,255,136,0.3); box-shadow: 0 0 20px rgba(0,255,136,0.05); }
+    .cartouche.degraded { border-color: rgba(255,170,0,0.3); box-shadow: 0 0 20px rgba(255,170,0,0.05); }
+    .cartouche.unhealthy { border-color: rgba(255,68,68,0.3); box-shadow: 0 0 20px rgba(255,68,68,0.05); }
+    .cartouche-header { font-size: 12px; text-transform: uppercase; letter-spacing: 3px; color: #00d9ff; margin-bottom: 16px; font-weight: 600; }
+    .cartouche-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    @media (max-width: 1200px) { .cartouche-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 600px) { .cartouche-grid { grid-template-columns: 1fr; } }
+    .cartouche .card { margin: 0; background: #12121a; }
 
     .metric { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1a2a; }
     .metric:last-child { border-bottom: none; }
