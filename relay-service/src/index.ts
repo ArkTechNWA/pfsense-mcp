@@ -215,7 +215,8 @@ app.get("/dashboard", (req, res) => {
       <div class="cartouche-grid">
         <div class="card ${healthClass}">
           <h2>NEVERHANG</h2>
-          <div style="margin-bottom: 16px;">
+          <div class="metric" style="margin-bottom: 8px;">
+            <span class="metric-label">Circuit</span>
             <span class="circuit ${circuitClass}">${circuitClass.toUpperCase()}</span>
           </div>
           <div class="metric"><span class="metric-label">Status</span><span class="metric-value">${neverhang.status || 'unknown'}</span></div>
@@ -227,8 +228,10 @@ app.get("/dashboard", (req, res) => {
         <div class="card neutral">
           <h2>A.L.A.N.</h2>
           <div class="big-number">${alan.success_rate_24h || '—'}</div>
-          <div class="big-label">Success Rate (24h)</div>
-          <div class="metric" style="margin-top: 16px;"><span class="metric-label">Queries (24h)</span><span class="metric-value">${alan.queries_24h || 0}</span></div>
+          <div class="big-label">API Success Rate (24h)</div>
+          <div class="metric" style="margin-top: 16px;"><span class="metric-label">Queries</span><span class="metric-value">${alan.queries_24h || 0}</span></div>
+          <div class="metric"><span class="metric-label">Avg Latency</span><span class="metric-value">${alan.avg_latency_by_complexity?.simple ? Math.round(alan.avg_latency_by_complexity.simple) + 'ms' : '—'}</span></div>
+          <div class="metric"><span class="metric-label">Learning</span><span class="metric-value ${(alan.queries_24h || 0) > 20 ? 'good' : ''}">${(alan.queries_24h || 0) > 50 ? 'mature' : (alan.queries_24h || 0) > 20 ? 'building' : 'new'}</span></div>
         </div>
 
         <div class="card neutral">
