@@ -436,7 +436,7 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
           const diskPct = sys.disk?.usage_percent || 0;
           const barClass = (pct: number) => pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
           const lastSeen = d.last_seen_at ? formatTimeSince(d.last_seen_at) : 'never';
-          const successRate = Math.round((alan.success_rate_24h || 1) * 100);
+          const successRate = Math.round((typeof alan.success_rate_24h === 'number' && !isNaN(alan.success_rate_24h) ? alan.success_rate_24h : 1) * 100);
 
           return `
           <div class="device-cartouche" data-token="${d.token}">
@@ -651,7 +651,7 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
               const memPct = sys.memory?.usage_percent || 0;
               const diskPct = sys.disk?.usage_percent || 0;
               const lastSeen = d.lastSeen ? formatTimeSince(d.lastSeen) : 'never';
-              const successRate = Math.round((alan.success_rate_24h || 1) * 100);
+              const successRate = Math.round((typeof alan.success_rate_24h === 'number' && !isNaN(alan.success_rate_24h) ? alan.success_rate_24h : 1) * 100);
               const barClass = (pct) => pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
 
               return '<div class="device-cartouche" data-token="' + d.token + '">' +
