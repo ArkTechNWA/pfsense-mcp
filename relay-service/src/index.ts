@@ -83,38 +83,55 @@ app.get("/dashboard", (req, res) => {
     historyCache.set(m.device_token, db.getMetricsHistory(m.device_token, 30));
   }
 
-  // Sparkline renderer - right-justified with dot fill
+  // SVG sparkline renderer - full width graph
   const renderSparkline = (history: Array<{ metrics: any; created_at: number }>, path: string): string => {
-    const WIDTH = 30; // Match gauge width visually
+    const WIDTH = 200;
+    const HEIGHT = 24;
+    const MAX_POINTS = 30;
+
     if (history.length < 2) {
-      const dots = '.'.repeat(WIDTH - 12);
-      return `<span class="sparkline">${dots}awaiting data</span>`;
+      return `<svg class="sparkline-svg" viewBox="0 0 ${WIDTH} ${HEIGHT}"><text x="50%" y="50%" text-anchor="middle" fill="#333" font-size="10">awaiting data</text></svg>`;
     }
 
-    // Extract values (oldest to newest, fills from right)
+    // Extract values (oldest to newest for left-to-right)
     const values: number[] = [];
-    for (let i = history.length - 1; i >= 0; i--) {
+    for (let i = Math.min(history.length, MAX_POINTS) - 1; i >= 0; i--) {
       const m = history[i].metrics;
       let val = 0;
       if (path === 'cpu') val = m.system?.cpu?.usage_percent || 0;
       else if (path === 'mem') val = m.system?.memory?.usage_percent || 0;
       else if (path === 'disk') val = m.system?.disk?.usage_percent || 0;
-      values.push(val);
+      values.push(Math.max(0, Math.min(100, val)));
     }
 
-    // Build sparkline chars
-    const chars = ' ▁▂▃▄▅▆▇';
-    let spark = '';
-    for (const v of values) {
-      const idx = Math.min(7, Math.floor(v / 12.5));
-      spark += chars[idx];
-    }
+    // Build SVG path - area chart with gradient
+    const step = WIDTH / (MAX_POINTS - 1);
+    const startX = WIDTH - (values.length - 1) * step; // Right-align data
 
-    // Right-justify: pad left with dots
-    const padding = Math.max(0, WIDTH - spark.length);
-    const dots = '.'.repeat(padding);
+    let pathD = `M ${startX} ${HEIGHT}`;
+    values.forEach((v, i) => {
+      const x = startX + i * step;
+      const y = HEIGHT - (v / 100) * (HEIGHT - 2);
+      pathD += ` L ${x} ${y}`;
+    });
+    pathD += ` L ${startX + (values.length - 1) * step} ${HEIGHT} Z`;
 
-    return `<span class="sparkline">${dots}${spark}</span>`;
+    // Line path for the top edge
+    let lineD = `M ${startX} ${HEIGHT - (values[0] / 100) * (HEIGHT - 2)}`;
+    values.forEach((v, i) => {
+      const x = startX + i * step;
+      const y = HEIGHT - (v / 100) * (HEIGHT - 2);
+      lineD += ` L ${x} ${y}`;
+    });
+
+    return `<svg class="sparkline-svg" viewBox="0 0 ${WIDTH} ${HEIGHT}" preserveAspectRatio="none">
+      <defs><linearGradient id="grad-${path}" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" style="stop-color:#00d9ff;stop-opacity:0.4"/>
+        <stop offset="100%" style="stop-color:#00d9ff;stop-opacity:0.05"/>
+      </linearGradient></defs>
+      <path d="${pathD}" fill="url(#grad-${path})"/>
+      <path d="${lineD}" fill="none" stroke="#00d9ff" stroke-width="1.5"/>
+    </svg>`;
   };
 
   // Helper functions for rendering
@@ -316,8 +333,8 @@ app.get("/dashboard", (req, res) => {
     .gauge-fill.warn { background: linear-gradient(90deg, #ffaa00, #ff6600); }
     .gauge-fill.bad { background: linear-gradient(90deg, #ff4444, #ff0000); }
 
-    .sparkline-row { margin-top: 4px; font-size: 11px; line-height: 1; font-family: 'JetBrains Mono', monospace; }
-    .sparkline { color: #00d9ff; letter-spacing: 0.5px; }
+    .sparkline-row { margin-top: 4px; height: 24px; }
+    .sparkline-svg { width: 100%; height: 24px; display: block; border-radius: 4px; background: #0a0a12; }
 
     .device-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #1a1a2a; border-radius: 8px; margin-bottom: 8px; }
     .device-name { font-weight: 600; }
