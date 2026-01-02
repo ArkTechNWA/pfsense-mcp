@@ -1098,12 +1098,20 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       const sys = metrics.system || {};
       const nev = metrics.neverhang || {};
       const alan = metrics.alan || {};
-      const gw = metrics.gateway || {};
+      const pf = metrics.pfsense || {};
+      const ifaces = metrics.interfaces || {};
+
+      // Parse A.L.A.N. success rate (handles "83%" string or number)
+      let successRate = 1;
+      if (typeof alan.success_rate_24h === 'string') {
+        successRate = parseFloat(alan.success_rate_24h.replace('%', '')) / 100;
+      } else if (typeof alan.success_rate_24h === 'number') {
+        successRate = alan.success_rate_24h > 1 ? alan.success_rate_24h / 100 : alan.success_rate_24h;
+      }
 
       // Health score (composite)
       const cpuPct = sys.cpu?.usage_percent || 0;
       const memPct = sys.memory?.usage_percent || 0;
-      const successRate = typeof alan.success_rate_24h === 'number' ? alan.success_rate_24h : 1;
       const healthScore = Math.round((1 - Math.max(cpuPct, memPct) / 100 * 0.3) * successRate * 100);
       const healthEl = document.getElementById('kpiHealth');
       healthEl.textContent = healthScore + '%';
@@ -1121,15 +1129,24 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       alanEl.textContent = alanPct + '%';
       alanEl.className = 'kpi-value ' + (alanPct >= 90 ? 'good' : alanPct >= 70 ? 'warn' : 'bad');
 
-      // Gateway
+      // Gateway latency (from pfsense.latency_ms - API response time)
       const gwEl = document.getElementById('kpiGateway');
-      const latency = gw.latency_ms || 0;
-      gwEl.textContent = latency + 'ms';
-      gwEl.className = 'kpi-value ' + (latency < 50 ? 'good' : latency < 100 ? 'warn' : 'bad');
+      const latency = pf.latency_ms || 0;
+      // Show in seconds if >= 1000ms
+      gwEl.textContent = latency >= 1000 ? (latency / 1000).toFixed(1) + 's' : latency + 'ms';
+      gwEl.className = 'kpi-value ' + (latency < 1000 ? 'good' : latency < 3000 ? 'warn' : 'bad');
 
-      // States (if available)
+      // States - estimate from interface packet counts
       const statesEl = document.getElementById('kpiStates');
-      statesEl.textContent = metrics.firewall_states || '--';
+      const wanPkts = (ifaces.wan?.inpkts || 0) + (ifaces.wan?.outpkts || 0);
+      statesEl.textContent = wanPkts > 0 ? formatNumber(wanPkts) : '--';
+    }
+
+    function formatNumber(n) {
+      if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return n.toString();
     }
 
     function updateResources(metrics, history) {
@@ -1158,17 +1175,57 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
 
     function updateGateway(metrics) {
       if (!metrics) return;
-      const gw = metrics.gateway || {};
+      const pf = metrics.pfsense || {};
 
       const latencyEl = document.getElementById('gwLatency');
-      const latency = gw.latency_ms || 0;
-      latencyEl.textContent = latency;
-      latencyEl.className = 'value ' + (latency < 50 ? 'good' : latency < 100 ? 'warn' : 'bad');
+      const latency = pf.latency_ms || 0;
+      // Display in seconds if >= 1000ms
+      latencyEl.textContent = latency >= 1000 ? (latency / 1000).toFixed(1) + 's' : latency;
+      latencyEl.className = 'value ' + (latency < 1000 ? 'good' : latency < 3000 ? 'warn' : 'bad');
 
       const lossEl = document.getElementById('gwLoss');
-      const loss = gw.packet_loss || 0;
-      lossEl.textContent = loss;
-      lossEl.className = 'value ' + (loss < 1 ? 'good' : loss < 5 ? 'warn' : 'bad');
+      // No packet loss data in current metrics - show reachable status
+      lossEl.textContent = pf.reachable ? '0' : '100';
+      lossEl.className = 'value ' + (pf.reachable ? 'good' : 'bad');
+    }
+
+    function updateTraffic(metrics, history) {
+      if (!metrics) return;
+      const ifaces = metrics.interfaces || {};
+
+      // Calculate traffic rate from history if available
+      const wanEl = document.getElementById('wanTraffic');
+      const lanEl = document.getElementById('lanTraffic');
+
+      if (history && history.length >= 2) {
+        const newest = history[0]?.metrics?.interfaces || {};
+        const older = history[Math.min(5, history.length - 1)]?.metrics?.interfaces || {};
+        const timeDiff = (history[0]?.created_at - history[Math.min(5, history.length - 1)]?.created_at) / 1000 || 60;
+
+        const wanBytesIn = (newest.wan?.inbytes || 0) - (older.wan?.inbytes || 0);
+        const wanBytesOut = (newest.wan?.outbytes || 0) - (older.wan?.outbytes || 0);
+        const wanMbps = ((wanBytesIn + wanBytesOut) * 8 / timeDiff / 1e6).toFixed(1);
+        wanEl.textContent = wanMbps + ' Mbps';
+
+        const lanBytesIn = (newest.lan?.inbytes || 0) - (older.lan?.inbytes || 0);
+        const lanBytesOut = (newest.lan?.outbytes || 0) - (older.lan?.outbytes || 0);
+        const lanMbps = ((lanBytesIn + lanBytesOut) * 8 / timeDiff / 1e6).toFixed(1);
+        lanEl.textContent = lanMbps + ' Mbps';
+      } else {
+        // Fallback: show total throughput
+        const wanTotal = formatBytes((ifaces.wan?.inbytes || 0) + (ifaces.wan?.outbytes || 0));
+        const lanTotal = formatBytes((ifaces.lan?.inbytes || 0) + (ifaces.lan?.outbytes || 0));
+        wanEl.textContent = wanTotal;
+        lanEl.textContent = lanTotal;
+      }
+    }
+
+    function formatBytes(bytes) {
+      if (bytes >= 1e12) return (bytes / 1e12).toFixed(1) + ' TB';
+      if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+      if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+      if (bytes >= 1e3) return (bytes / 1e3).toFixed(1) + ' KB';
+      return bytes + ' B';
     }
 
     function updateEvents(events) {
@@ -1216,6 +1273,7 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
           updateKPIs(device.metrics);
           updateResources(device.metrics, device.metricsHistory);
           updateGateway(device.metrics);
+          updateTraffic(device.metrics, device.metricsHistory);
         }
 
         updateEvents(data.events);
