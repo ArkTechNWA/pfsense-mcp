@@ -1,9 +1,13 @@
 /**
- * Dashboard routes with magic link auth
+ * Dashboard v2 - Modern pfSense Guardian Dashboard
  *
  * Features:
- * - Magic link authentication with user-selectable session duration
- * - Auto-refreshing dashboard synced to device check-in intervals
+ * - Dark theme with CSS variables
+ * - Collapsible sidebar with device list
+ * - Top rail KPIs (Health, Circuit, A.L.A.N., Gateway, States)
+ * - Period selector for RRD data (1H/4H/1D/1W/1M)
+ * - Expandable events with Claude diagnostics
+ * - Working control buttons
  */
 
 import { Router, Request, Response, NextFunction } from "express";
@@ -15,7 +19,6 @@ const router = Router();
 
 // In-memory token store (ephemeral - clears on restart, but that's OK for magic links)
 const authTokens = new Map<string, { email: string; expires: number; sessionDuration: number }>();
-// Sessions are now stored in SQLite - see db.createSession/getSession/deleteSession
 
 const TOKEN_EXPIRY = 60 * 60 * 1000;  // 1 hour for magic links
 
@@ -28,7 +31,7 @@ const DURATION_OPTIONS: Record<string, { label: string; ms: number }> = {
 };
 
 const DEFAULT_DURATION = "1d";
-const DEFAULT_REFRESH_INTERVAL = 5 * 60 * 1000;  // 5 minutes (matches Guardian default)
+const DEFAULT_REFRESH_INTERVAL = 5 * 60 * 1000;  // 5 minutes
 
 // Extend Request type
 interface AuthRequest extends Request {
@@ -43,22 +46,18 @@ router.post("/auth/request", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "email_required" });
   }
 
-  // Check if this email has any devices
   const devices = db.getDevicesByEmail(email);
   console.log("[Dashboard] Found devices:", devices?.length || 0);
   if (!devices || devices.length === 0) {
     return res.json({ success: true, message: "If this email has registered devices, a login link was sent." });
   }
 
-  // Validate duration
   const selectedDuration = DURATION_OPTIONS[duration] ? duration : DEFAULT_DURATION;
   const sessionDuration = DURATION_OPTIONS[selectedDuration].ms;
 
-  // Generate token
   const token = crypto.randomBytes(32).toString("hex");
   authTokens.set(token, { email, expires: Date.now() + TOKEN_EXPIRY, sessionDuration });
 
-  // Send email
   const loginUrl = `https://pfsense-mcp.arktechnwa.com/auth/verify?token=${token}`;
   const durationLabel = DURATION_OPTIONS[selectedDuration].label;
 
@@ -76,20 +75,17 @@ router.post("/auth/request", async (req: Request, res: Response) => {
 // Verify magic link
 router.get("/auth/verify", (req: Request, res: Response) => {
   const { token } = req.query;
-
   const auth = authTokens.get(token as string);
   if (!auth || Date.now() > auth.expires) {
     authTokens.delete(token as string);
     return res.redirect("/dashboard/login?error=expired");
   }
 
-  // Create session with user-selected duration (stored in SQLite)
   const sessionId = crypto.randomBytes(32).toString("hex");
   const sessionExpiry = Date.now() + auth.sessionDuration;
   db.createSession(sessionId, auth.email, sessionExpiry);
   authTokens.delete(token as string);
 
-  // Set cookie and redirect
   res.cookie("pfsense_session", sessionId, {
     httpOnly: true,
     secure: true,
@@ -103,34 +99,29 @@ router.get("/auth/verify", (req: Request, res: Response) => {
 function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const sessionId = req.cookies?.pfsense_session;
   const session = db.getSession(sessionId);
-
   if (!session || Date.now() > session.expires_at) {
     db.deleteSession(sessionId);
     return res.redirect("/dashboard/login");
   }
-
   req.userEmail = session.email;
   next();
 }
 
-// API auth middleware (returns JSON instead of redirect)
+// API auth middleware
 function requireAuthAPI(req: AuthRequest, res: Response, next: NextFunction) {
   const sessionId = req.cookies?.pfsense_session;
   const session = db.getSession(sessionId);
-
   if (!session || Date.now() > session.expires_at) {
     db.deleteSession(sessionId);
     return res.status(401).json({ error: "unauthorized" });
   }
-
   req.userEmail = session.email;
   next();
 }
 
-// Login page with duration selection
+// Login page
 router.get("/dashboard/login", (req: Request, res: Response) => {
   const error = req.query.error === "expired" ? "Link expired. Please request a new one." : "";
-
   const durationOptions = Object.entries(DURATION_OPTIONS)
     .map(([key, opt]) => `<option value="${key}"${key === DEFAULT_DURATION ? " selected" : ""}>${opt.label}</option>`)
     .join("");
@@ -139,37 +130,49 @@ router.get("/dashboard/login", (req: Request, res: Response) => {
 <html>
 <head>
   <title>pfSense Guardian - Login</title>
-  <meta name=viewport content=width=device-width,initial-scale=1>
+  <meta name=viewport content="width=device-width,initial-scale=1">
   <style>
-    body { font-family: system-ui; background: #1a1a2e; color: #eee; margin: 0; padding: 40px 20px; }
-    .container { max-width: 400px; margin: 0 auto; }
-    h1 { color: #00d9ff; }
-    input, select { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #333; border-radius: 4px; background: #16213e; color: #eee; box-sizing: border-box; }
-    select { cursor: pointer; }
-    button { width: 100%; padding: 12px; background: #00d9ff; color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
-    button:hover { background: #00b8d4; }
-    .msg { padding: 15px; background: #16213e; border-radius: 4px; margin: 20px 0; }
-    .error { background: #4a1a1a; color: #ff8888; }
-    label { color: #888; font-size: 0.9em; }
-    .field { margin: 15px 0; }
+    :root {
+      --bg-0: #0a0a14;
+      --bg-1: #12121e;
+      --bg-2: #1a1a2e;
+      --text-primary: #f0f0f0;
+      --text-secondary: #a0a0b0;
+      --cyan: #00d9ff;
+      --green: #00ff88;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg-0); color: var(--text-primary); margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .container { width: 100%; max-width: 400px; }
+    h1 { color: var(--cyan); margin: 0 0 8px 0; font-size: 1.8em; }
+    .subtitle { color: var(--text-secondary); margin-bottom: 30px; }
+    .field { margin-bottom: 20px; }
+    label { display: block; color: var(--text-secondary); font-size: 0.85em; margin-bottom: 6px; }
+    input, select { width: 100%; padding: 14px 16px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: var(--bg-2); color: var(--text-primary); font-size: 1em; }
+    input:focus, select:focus { outline: none; border-color: var(--cyan); }
+    button { width: 100%; padding: 14px; background: var(--cyan); color: #000; border: none; border-radius: 8px; font-size: 1em; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+    button:hover { opacity: 0.9; }
+    .msg { padding: 16px; background: var(--bg-2); border-radius: 8px; margin-top: 20px; text-align: center; }
+    .error { background: rgba(255,68,68,0.15); color: #ff8888; }
   </style>
 </head>
 <body>
-  <div class=container>
+  <div class="container">
     <h1>pfSense Guardian</h1>
-    <p>Enter your email to receive a login link.</p>
+    <p class="subtitle">Network monitoring dashboard</p>
     ${error ? '<div class="msg error">' + error + '</div>' : ''}
-    <form id=loginForm>
-      <div class=field>
-        <input type=email name=email placeholder=you@example.com required>
+    <form id="loginForm">
+      <div class="field">
+        <label>Email address</label>
+        <input type="email" name="email" placeholder="you@example.com" required>
       </div>
-      <div class=field>
-        <label>Stay logged in for:</label>
-        <select name=duration>${durationOptions}</select>
+      <div class="field">
+        <label>Stay logged in for</label>
+        <select name="duration">${durationOptions}</select>
       </div>
-      <button type=submit>Send Login Link</button>
+      <button type="submit">Send Login Link</button>
     </form>
-    <div id=msg class=msg style=display:none></div>
+    <div id="msg" class="msg" style="display:none"></div>
   </div>
   <script>
     document.getElementById('loginForm').onsubmit = async (e) => {
@@ -178,6 +181,7 @@ router.get("/dashboard/login", (req: Request, res: Response) => {
       const duration = e.target.duration.value;
       const msg = document.getElementById('msg');
       msg.style.display = 'block';
+      msg.className = 'msg';
       msg.textContent = 'Sending...';
       try {
         const res = await fetch('/auth/request', {
@@ -188,6 +192,7 @@ router.get("/dashboard/login", (req: Request, res: Response) => {
         const data = await res.json();
         msg.textContent = data.message || 'Check your email!';
       } catch (err) {
+        msg.className = 'msg error';
         msg.textContent = 'Error sending link. Try again.';
       }
     };
@@ -200,80 +205,27 @@ function formatTimeSince(timestamp: number): string {
   const diff = Date.now() - timestamp;
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return "just now";
-  if (mins < 60) return mins + " min ago";
+  if (mins < 60) return mins + "m ago";
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return hours + " hr ago";
+  if (hours < 24) return hours + "h ago";
   const days = Math.floor(hours / 24);
-  return days + " day" + (days > 1 ? "s" : "") + " ago";
+  return days + "d ago";
 }
 
-// API endpoint for RRD historical data
-router.get("/api/dashboard/rrd/:metric", requireAuthAPI, (req: AuthRequest, res: Response) => {
-  const devices = db.getDevicesByEmail(req.userEmail!);
-  if (devices.length === 0) {
-    return res.status(404).json({ error: "No devices found" });
-  }
-
-  // Get RRD data for user's first device (expand later for multi-device)
-  const device = devices[0];
-  const metric = req.params.metric;
-  const rrdData = db.getRrdData(device.token, metric);
-
-  if (rrdData.length === 0) {
-    return res.status(404).json({ error: "No RRD data available for this metric" });
-  }
-
-  // Return all periods for this metric
-  res.json({
-    device: device.name || device.token.slice(0, 8),
-    metric,
-    periods: rrdData.map((r) => ({
-      period: r.period,
-      data: JSON.parse(r.data_json),
-      updated_at: new Date(r.created_at).toISOString(),
-    })),
-  });
-});
-
-// API endpoint for all available RRD metrics
-router.get("/api/dashboard/rrd", requireAuthAPI, (req: AuthRequest, res: Response) => {
-  const devices = db.getDevicesByEmail(req.userEmail!);
-  if (devices.length === 0) {
-    return res.status(404).json({ error: "No devices found" });
-  }
-
-  const device = devices[0];
-  const allRrd = db.getRrdData(device.token);
-
-  // Group by metric
-  const metrics: Record<string, string[]> = {};
-  allRrd.forEach((r) => {
-    if (!metrics[r.metric]) metrics[r.metric] = [];
-    metrics[r.metric].push(r.period);
-  });
-
-  res.json({
-    device: device.name || device.token.slice(0, 8),
-    available_metrics: Object.entries(metrics).map(([metric, periods]) => ({ metric, periods })),
-  });
-});
-
-// API endpoint for dashboard data (for auto-refresh)
+// API: Dashboard status
 router.get("/api/dashboard/status", requireAuthAPI, (req: AuthRequest, res: Response) => {
   const devices = db.getDevicesByEmail(req.userEmail!);
   const recentEvents = db.getRecentEventsByEmail(req.userEmail!, 20);
 
-  // Fetch metrics for each device
   const deviceData = devices.map((d: any) => {
     const latestMetrics = db.getLatestMetrics(d.token);
-    const metricsHistory = db.getMetricsHistory(d.token, 30);
+    const metricsHistory = db.getMetricsHistory(d.token, 60);
 
     return {
       name: d.name || d.token.slice(0, 8),
       token: d.token,
       lastSeen: d.last_seen_at,
-      lastSeenFormatted: d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : "Waiting for check-in",
-      timeSince: d.last_seen_at ? formatTimeSince(d.last_seen_at) : "",
+      timeSince: d.last_seen_at ? formatTimeSince(d.last_seen_at) : "never",
       metrics: latestMetrics?.metrics || null,
       metricsHistory: metricsHistory.map(h => ({
         metrics: h.metrics,
@@ -283,10 +235,12 @@ router.get("/api/dashboard/status", requireAuthAPI, (req: AuthRequest, res: Resp
   });
 
   const eventData = recentEvents.map((e: any) => ({
+    id: e.id,
     severity: e.severity,
     type: e.event_type,
     summary: e.summary,
-    time: new Date(e.created_at).toLocaleString(),
+    time: formatTimeSince(e.created_at),
+    raw_data: e.raw_data ? JSON.parse(e.raw_data) : null,
   }));
 
   res.json({
@@ -297,310 +251,831 @@ router.get("/api/dashboard/status", requireAuthAPI, (req: AuthRequest, res: Resp
   });
 });
 
-// Dashboard with auto-refresh and NEVERHANG/ALAN metrics
+// API: RRD data for specific metric
+router.get("/api/dashboard/rrd/:metric", requireAuthAPI, (req: AuthRequest, res: Response) => {
+  const devices = db.getDevicesByEmail(req.userEmail!);
+  if (devices.length === 0) {
+    return res.status(404).json({ error: "No devices found" });
+  }
+
+  const device = devices[0];
+  const metric = req.params.metric;
+  const period = (req.query.period as string) || "1h";
+  const rrdData = db.getRrdData(device.token, metric);
+
+  const periodData = rrdData.find((r: any) => r.period === period);
+  if (!periodData) {
+    return res.status(404).json({ error: "No data for this period" });
+  }
+
+  res.json({
+    device: device.name || device.token.slice(0, 8),
+    metric,
+    period,
+    data: JSON.parse(periodData.data_json),
+    updated_at: new Date(periodData.created_at).toISOString(),
+  });
+});
+
+// API: All available RRD metrics
+router.get("/api/dashboard/rrd", requireAuthAPI, (req: AuthRequest, res: Response) => {
+  const devices = db.getDevicesByEmail(req.userEmail!);
+  if (devices.length === 0) {
+    return res.status(404).json({ error: "No devices found" });
+  }
+
+  const device = devices[0];
+  const allRrd = db.getRrdData(device.token);
+
+  const metrics: Record<string, string[]> = {};
+  allRrd.forEach((r: any) => {
+    if (!metrics[r.metric]) metrics[r.metric] = [];
+    metrics[r.metric].push(r.period);
+  });
+
+  res.json({
+    device: device.name || device.token.slice(0, 8),
+    available_metrics: Object.entries(metrics).map(([metric, periods]) => ({ metric, periods })),
+  });
+});
+
+// API: Execute action
+router.post("/api/dashboard/action", requireAuthAPI, async (req: AuthRequest, res: Response) => {
+  const { action, device_token } = req.body;
+
+  const devices = db.getDevicesByEmail(req.userEmail!);
+  const device = devices.find((d: any) => d.token === device_token);
+  if (!device) {
+    return res.status(403).json({ error: "Device not found" });
+  }
+
+  // Queue command for device pickup
+  const command = db.queueCommand(device_token, action, "dashboard");
+
+  res.json({
+    success: true,
+    command_id: command.id,
+    message: `Command '${action}' queued. Device will execute on next check-in.`,
+  });
+});
+
+// Main dashboard
 router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
   const devices = db.getDevicesByEmail(req.userEmail!);
-  const recentEvents = db.getRecentEventsByEmail(req.userEmail!, 20);
 
-  // Fetch metrics for initial render
-  const deviceMetrics = devices.map((d: any) => {
+  // Initial data for server-side render
+  const deviceData = devices.map((d: any) => {
     const latestMetrics = db.getLatestMetrics(d.token);
     return {
-      ...d,
       name: d.name || d.token.slice(0, 8),
+      token: d.token,
+      lastSeen: d.last_seen_at,
+      timeSince: d.last_seen_at ? formatTimeSince(d.last_seen_at) : "never",
       metrics: latestMetrics?.metrics || null,
     };
   });
 
-  const eventRows = recentEvents.map((e: any) => `
-    <tr data-event>
-      <td><span class=sev-${e.severity}>${e.severity}</span></td>
-      <td>${e.event_type}</td>
-      <td>${e.summary}</td>
-      <td>${new Date(e.created_at).toLocaleString()}</td>
-    </tr>
-  `).join("");
-
   res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>pfSense Guardian - Dashboard</title>
-  <meta name=viewport content=width=device-width,initial-scale=1>
+  <title>pfSense Guardian</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui; background: #1a1a2e; color: #eee; margin: 0; padding: 20px; }
-    .container { max-width: 1200px; margin: 0 auto; }
-    h1 { color: #00d9ff; margin-bottom: 5px; }
-    .email { color: #888; margin-bottom: 20px; }
-    h2 { color: #00ff88; border-bottom: 1px solid #333; padding-bottom: 10px; margin-top: 30px; }
-    table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #333; }
-    th { background: #16213e; }
-    .sev-critical { color: #ff4444; font-weight: bold; }
-    .sev-warning { color: #ffaa00; }
-    .sev-info { color: #00d9ff; }
-    a { color: #00d9ff; }
-    .logout { float: right; }
-    .note { color: #666; font-size: 0.9em; margin-top: 10px; }
-    .refresh-status { color: #666; font-size: 0.85em; text-align: right; margin-bottom: 20px; }
-    .refresh-status .live { color: #00ff88; }
+    /* ========================================
+       CSS VARIABLES - Dark Theme Foundation
+       ======================================== */
+    :root {
+      --bg-0: #0a0a14;
+      --bg-1: #12121e;
+      --bg-2: #1a1a2e;
+      --bg-3: #222236;
+      --bg-hover: #2a2a44;
+      --border-subtle: rgba(255,255,255,0.08);
+      --border-medium: rgba(255,255,255,0.12);
+      --text-primary: #f0f0f0;
+      --text-secondary: #a0a0b0;
+      --text-muted: #666680;
+      --cyan: #00d9ff;
+      --green: #00ff88;
+      --yellow: #ffaa00;
+      --red: #ff4444;
+      --purple: #a855f7;
+      --gradient-good: linear-gradient(90deg, #00ff88 0%, #00d9ff 100%);
+      --gradient-warn: linear-gradient(90deg, #ffaa00 0%, #ff6600 100%);
+      --gradient-bad: linear-gradient(90deg, #ff4444 0%, #cc0000 100%);
+      --sidebar-width: 220px;
+      --topnav-height: 52px;
+      --toprail-height: 80px;
+    }
 
-    /* Device cartouches - full width, stacked vertically */
-    .device-stack { display: flex; flex-direction: column; gap: 20px; }
-    .device-cartouche { background: #16213e; border-radius: 12px; padding: 20px; width: 100%; }
-    .cartouche-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #333; }
-    .device-name { font-size: 1.4em; color: #00d9ff; font-weight: 600; }
-    .device-seen { font-size: 0.85em; color: #666; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg-0); color: var(--text-primary); }
 
-    /* 5-card inline layout */
-    .cartouche-cards { display: flex; gap: 15px; flex-wrap: nowrap; }
-    .cartouche-card { background: #0f3460; border-radius: 8px; padding: 16px; flex: 1; min-width: 0; }
-    .cartouche-card.system-card { flex: 1.5; } /* System card slightly wider for 3 bars */
-    .card-title { font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+    /* ========================================
+       GRID LAYOUT
+       ======================================== */
+    .dashboard {
+      display: grid;
+      grid-template-areas:
+        "topnav topnav"
+        "sidebar main";
+      grid-template-columns: var(--sidebar-width) 1fr;
+      grid-template-rows: var(--topnav-height) 1fr;
+      height: 100vh;
+      overflow: hidden;
+    }
 
-    /* NEVERHANG card */
-    .circuit-tag { display: inline-block; padding: 4px 12px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
-    .circuit-tag.closed { background: rgba(0, 255, 136, 0.2); color: #00ff88; }
-    .circuit-tag.open { background: rgba(255, 68, 68, 0.2); color: #ff4444; }
-    .circuit-tag.half_open { background: rgba(255, 170, 0, 0.2); color: #ffaa00; }
-    .nev-stats { font-size: 0.8em; color: #666; margin-top: 10px; }
+    /* Mobile: sidebar hidden by default */
+    @media (max-width: 768px) {
+      .dashboard {
+        grid-template-columns: 1fr;
+        grid-template-areas: "topnav" "main";
+      }
+      .sidebar {
+        position: fixed;
+        left: 0;
+        top: var(--topnav-height);
+        bottom: 0;
+        width: var(--sidebar-width);
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        z-index: 100;
+      }
+      .sidebar.open { transform: translateX(0); }
+      .sidebar-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        top: var(--topnav-height);
+        background: rgba(0,0,0,0.5);
+        z-index: 99;
+      }
+      .sidebar.open + .sidebar-overlay { display: block; }
+    }
 
-    /* A.L.A.N. card */
-    .alan-big { font-size: 2.2em; font-weight: bold; color: #00d9ff; }
-    .alan-label { font-size: 0.75em; color: #888; }
-    .alan-stats { font-size: 0.8em; color: #666; margin-top: 8px; }
+    /* ========================================
+       TOP NAVIGATION
+       ======================================== */
+    .topnav {
+      grid-area: topnav;
+      background: var(--bg-1);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+    }
+    .menu-toggle {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--text-primary);
+      font-size: 1.4em;
+      cursor: pointer;
+      padding: 8px;
+    }
+    @media (max-width: 768px) {
+      .menu-toggle { display: block; }
+    }
+    .logo {
+      font-weight: 600;
+      font-size: 1.1em;
+      color: var(--cyan);
+    }
+    .device-select {
+      background: var(--bg-2);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      color: var(--text-primary);
+      padding: 6px 12px;
+      font-size: 0.9em;
+      cursor: pointer;
+    }
+    .topnav-spacer { flex: 1; }
+    .user-area {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .user-email {
+      color: var(--text-secondary);
+      font-size: 0.85em;
+    }
+    .logout-btn {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.85em;
+      padding: 6px 12px;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+    .logout-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
 
-    /* SYSTEM card - progress bars with gradients */
-    .system-bars { display: flex; flex-direction: column; gap: 12px; }
-    .bar-row { }
-    .bar-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
-    .bar-label { font-size: 0.75em; color: #888; }
-    .bar-value { font-size: 0.85em; font-weight: bold; }
-    .bar-track { height: 8px; background: #1a1a2e; border-radius: 4px; overflow: hidden; }
-    .bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #00ff88 0%, #00d9ff 100%); transition: width 0.3s ease; }
-    .bar-histogram { height: 28px; margin-top: 4px; }
-    .bar-histogram svg { width: 100%; height: 100%; }
+    /* ========================================
+       SIDEBAR
+       ======================================== */
+    .sidebar {
+      grid-area: sidebar;
+      background: var(--bg-1);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .sidebar-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .sidebar-section h3 {
+      font-size: 0.7em;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+    .device-list {
+      list-style: none;
+    }
+    .device-list li {
+      padding: 10px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 4px;
+      transition: background 0.15s;
+    }
+    .device-list li:hover { background: var(--bg-hover); }
+    .device-list li.active { background: var(--bg-3); }
+    .device-list .device-name { display: block; font-weight: 500; }
+    .device-list .device-status {
+      font-size: 0.8em;
+      color: var(--text-muted);
+    }
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 16px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .refresh-indicator {
+      font-size: 0.8em;
+      color: var(--text-muted);
+    }
+    .refresh-indicator .live {
+      color: var(--green);
+    }
 
-    /* Value-based bar colors */
-    .bar-fill.good { background: linear-gradient(90deg, #00ff88 0%, #00d9ff 100%); }
-    .bar-fill.warn { background: linear-gradient(90deg, #ffaa00 0%, #ff6600 100%); }
-    .bar-fill.bad { background: linear-gradient(90deg, #ff4444 0%, #cc0000 100%); }
+    /* ========================================
+       MAIN CONTENT
+       ======================================== */
+    .main {
+      grid-area: main;
+      background: var(--bg-0);
+      overflow-y: auto;
+      padding: 20px;
+    }
 
-    /* GATEWAY card */
-    .gateway-stat { margin-bottom: 10px; }
-    .gateway-value { font-size: 1.4em; font-weight: bold; }
-    .gateway-label { font-size: 0.7em; color: #888; }
-    .gateway-good { color: #00ff88; }
-    .gateway-warn { color: #ffaa00; }
-    .gateway-bad { color: #ff4444; }
+    /* ========================================
+       TOP RAIL - KPIs
+       ======================================== */
+    .toprail {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .kpi {
+      background: var(--bg-2);
+      border-radius: 10px;
+      padding: 14px 18px;
+      min-width: 120px;
+      flex: 1;
+      text-align: center;
+    }
+    .kpi-label {
+      display: block;
+      font-size: 0.7em;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .kpi-value {
+      font-size: 1.6em;
+      font-weight: 700;
+    }
+    .kpi-value.good { color: var(--green); }
+    .kpi-value.warn { color: var(--yellow); }
+    .kpi-value.bad { color: var(--red); }
+    .circuit-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 0.75em;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .circuit-badge.closed { background: rgba(0,255,136,0.15); color: var(--green); }
+    .circuit-badge.open { background: rgba(255,68,68,0.15); color: var(--red); }
+    .circuit-badge.half_open { background: rgba(255,170,0,0.15); color: var(--yellow); }
 
-    /* CONTROLS card */
-    .control-btn { display: block; width: 100%; padding: 8px 12px; margin-bottom: 8px; background: #1a1a2e; border: 1px solid #333; border-radius: 4px; color: #00d9ff; cursor: pointer; font-size: 0.85em; transition: all 0.2s; }
-    .control-btn:hover { background: #00d9ff; color: #000; }
-    .control-btn:last-child { margin-bottom: 0; }
+    /* ========================================
+       PERIOD SELECTOR
+       ======================================== */
+    .period-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .period-label {
+      font-size: 0.8em;
+      color: var(--text-muted);
+      margin-right: 4px;
+    }
+    .period-btn {
+      background: var(--bg-2);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      font-size: 0.8em;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .period-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+    .period-btn.active {
+      background: var(--cyan);
+      color: #000;
+      border-color: var(--cyan);
+    }
 
-    /* Legacy metric classes for compatibility */
-    .metric-good { color: #00ff88; }
-    .metric-warn { color: #ffaa00; }
-    .metric-bad { color: #ff4444; }
+    /* ========================================
+       METRICS GRID
+       ======================================== */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .metric-card {
+      background: var(--bg-2);
+      border-radius: 10px;
+      padding: 18px;
+    }
+    .metric-card h3 {
+      font-size: 0.75em;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
 
-    /* Awaiting data */
-    .awaiting { color: #666; font-style: italic; text-align: center; padding: 40px; }
+    /* Resource bars */
+    .resource-bar {
+      margin-bottom: 14px;
+    }
+    .resource-bar:last-child { margin-bottom: 0; }
+    .bar-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .bar-label { font-size: 0.85em; color: var(--text-secondary); }
+    .bar-value { font-size: 0.85em; font-weight: 600; }
+    .bar-track {
+      height: 6px;
+      background: var(--bg-0);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+    .bar-fill.good { background: var(--gradient-good); }
+    .bar-fill.warn { background: var(--gradient-warn); }
+    .bar-fill.bad { background: var(--gradient-bad); }
+    .bar-chart {
+      height: 32px;
+      margin-top: 6px;
+    }
+    .bar-chart svg {
+      width: 100%;
+      height: 100%;
+    }
 
-    /* Sparklines / Histograms */
-    .sparkline, .histogram { width: 100%; height: 24px; }
-    .sparkline path, .histogram path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-    .sparkline .area, .histogram .area { stroke: none; opacity: 0.3; }
+    /* Traffic charts */
+    .traffic-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .traffic-label { font-size: 0.85em; color: var(--text-secondary); }
+    .traffic-value { font-size: 0.85em; font-weight: 600; color: var(--cyan); }
+    .traffic-chart {
+      height: 48px;
+      margin-top: 8px;
+    }
+    .traffic-chart svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Gateway stats */
+    .gateway-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .gateway-stat .value {
+      font-size: 1.4em;
+      font-weight: 700;
+    }
+    .gateway-stat .label {
+      font-size: 0.75em;
+      color: var(--text-muted);
+    }
+
+    /* ========================================
+       EVENTS SECTION
+       ======================================== */
+    .events-section {
+      margin-bottom: 24px;
+    }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .section-header h2 {
+      font-size: 0.9em;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-secondary);
+    }
+    .event-card {
+      background: var(--bg-2);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .event-card:hover { background: var(--bg-3); }
+    .event-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .event-sev {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .event-sev.critical { background: var(--red); }
+    .event-sev.warning { background: var(--yellow); }
+    .event-sev.info { background: var(--cyan); }
+    .event-type {
+      font-size: 0.8em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+    .event-time {
+      font-size: 0.8em;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+    .event-summary {
+      margin-top: 6px;
+      font-size: 0.9em;
+    }
+    .event-details {
+      display: none;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .event-card.expanded .event-details { display: block; }
+    .event-raw {
+      background: var(--bg-0);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.8em;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+
+    /* ========================================
+       CONTROLS SECTION
+       ======================================== */
+    .controls-section {
+      background: var(--bg-2);
+      border-radius: 10px;
+      padding: 18px;
+    }
+    .controls-section h2 {
+      font-size: 0.75em;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
+    .control-grid {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .control-btn {
+      background: var(--bg-0);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      color: var(--cyan);
+      padding: 10px 16px;
+      font-size: 0.85em;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .control-btn:hover {
+      background: var(--cyan);
+      color: #000;
+    }
+    .control-btn.loading {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+    .control-btn.danger {
+      color: var(--red);
+    }
+    .control-btn.danger:hover {
+      background: var(--red);
+      color: #fff;
+    }
+    .control-output {
+      margin-top: 14px;
+      padding: 12px;
+      background: var(--bg-0);
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 0.8em;
+      display: none;
+    }
+    .control-output.visible { display: block; }
+
+    /* ========================================
+       EMPTY STATE
+       ======================================== */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+    .empty-state h2 {
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
   </style>
 </head>
 <body>
-  <div class=container>
-    <a href=/auth/logout class=logout>Logout</a>
-    <h1>pfSense Guardian</h1>
-    <p class=email>${req.userEmail}</p>
-    <p class=refresh-status>
-      <span class=live>&#9679;</span> Live &mdash;
-      Next refresh in <span id=countdown>5:00</span>
-    </p>
+  <div class="dashboard">
+    <!-- TOP NAVIGATION -->
+    <nav class="topnav">
+      <button class="menu-toggle" id="menuToggle">&#9776;</button>
+      <span class="logo">pfSense Guardian</span>
+      <select class="device-select" id="deviceSelect">
+        ${deviceData.map((d: any, i: number) =>
+          `<option value="${d.token}"${i === 0 ? ' selected' : ''}>${d.name}</option>`
+        ).join('')}
+      </select>
+      <span class="topnav-spacer"></span>
+      <div class="user-area">
+        <span class="user-email">${req.userEmail}</span>
+        <a href="/auth/logout" class="logout-btn">Logout</a>
+      </div>
+    </nav>
 
-    <div class="device-stack" id="deviceStack">
-      ${deviceMetrics.length === 0 ? '<p class="awaiting">No devices registered. <a href="/register">Register a device</a></p>' :
-        deviceMetrics.map((d: any) => {
-          const m = d.metrics || {};
-          const sys = m.system || {};
-          const nev = m.neverhang || {};
-          const alan = m.alan || {};
-          const gw = m.gateway || {};
-          const cpuPct = sys.cpu?.usage_percent || 0;
-          const memPct = sys.memory?.usage_percent || 0;
-          const diskPct = sys.disk?.usage_percent || 0;
-          const barClass = (pct: number) => pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
-          const lastSeen = d.last_seen_at ? formatTimeSince(d.last_seen_at) : 'never';
-          const successRate = Math.round((typeof alan.success_rate_24h === 'number' && !isNaN(alan.success_rate_24h) ? alan.success_rate_24h : 1) * 100);
-
-          return `
-          <div class="device-cartouche" data-token="${d.token}">
-            <div class="cartouche-header">
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-section">
+        <h3>Devices</h3>
+        <ul class="device-list" id="deviceList">
+          ${deviceData.map((d: any, i: number) => `
+            <li class="${i === 0 ? 'active' : ''}" data-token="${d.token}">
               <span class="device-name">${d.name}</span>
-              <span class="device-seen">Last seen: ${lastSeen}</span>
+              <span class="device-status">${d.timeSince}</span>
+            </li>
+          `).join('')}
+        </ul>
+      </div>
+      <div class="sidebar-footer">
+        <div class="refresh-indicator">
+          <span class="live">&#9679;</span> Live &mdash; <span id="countdown">5:00</span>
+        </div>
+      </div>
+    </aside>
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- MAIN CONTENT -->
+    <main class="main" id="mainContent">
+      ${deviceData.length === 0 ? `
+        <div class="empty-state">
+          <h2>No devices registered</h2>
+          <p>Register a pfSense device to see metrics here.</p>
+        </div>
+      ` : `
+        <!-- TOP RAIL KPIs -->
+        <div class="toprail" id="toprail">
+          <div class="kpi">
+            <span class="kpi-label">Health</span>
+            <span class="kpi-value good" id="kpiHealth">--</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Circuit</span>
+            <span class="circuit-badge closed" id="kpiCircuit">CLOSED</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">A.L.A.N.</span>
+            <span class="kpi-value good" id="kpiAlan">--%</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Gateway</span>
+            <span class="kpi-value good" id="kpiGateway">--ms</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">States</span>
+            <span class="kpi-value" id="kpiStates">--</span>
+          </div>
+        </div>
+
+        <!-- PERIOD SELECTOR -->
+        <div class="period-row">
+          <span class="period-label">Period:</span>
+          <button class="period-btn active" data-period="1h">1H</button>
+          <button class="period-btn" data-period="4h">4H</button>
+          <button class="period-btn" data-period="1d">1D</button>
+          <button class="period-btn" data-period="1w">1W</button>
+          <button class="period-btn" data-period="1m">1M</button>
+        </div>
+
+        <!-- METRICS GRID -->
+        <div class="metrics-grid">
+          <!-- RESOURCES -->
+          <div class="metric-card" id="resourcesCard">
+            <h3>System Resources</h3>
+            <div class="resource-bar" id="cpuBar">
+              <div class="bar-header">
+                <span class="bar-label">CPU</span>
+                <span class="bar-value">--%</span>
+              </div>
+              <div class="bar-track"><div class="bar-fill good" style="width:0%"></div></div>
+              <div class="bar-chart"></div>
             </div>
-
-            ${d.metrics ? `
-            <div class="cartouche-cards">
-              <!-- NEVERHANG -->
-              <div class="cartouche-card neverhang-card">
-                <div class="card-title">NEVERHANG</div>
-                <span class="circuit-tag ${nev.circuit || 'closed'}">${(nev.circuit || 'closed').toUpperCase()}</span>
-                <div class="nev-stats">${nev.failures || 0} failures<br>${nev.recoveries || 0} recoveries</div>
+            <div class="resource-bar" id="memoryBar">
+              <div class="bar-header">
+                <span class="bar-label">Memory</span>
+                <span class="bar-value">--%</span>
               </div>
-
-              <!-- A.L.A.N. -->
-              <div class="cartouche-card alan-card">
-                <div class="card-title">A.L.A.N.</div>
-                <div class="alan-big">${successRate}%</div>
-                <div class="alan-label">success rate</div>
-                <div class="alan-stats">${alan.queries_24h || 0} queries (24h)</div>
+              <div class="bar-track"><div class="bar-fill good" style="width:0%"></div></div>
+              <div class="bar-chart"></div>
+            </div>
+            <div class="resource-bar" id="diskBar">
+              <div class="bar-header">
+                <span class="bar-label">Disk</span>
+                <span class="bar-value">--%</span>
               </div>
+              <div class="bar-track"><div class="bar-fill good" style="width:0%"></div></div>
+              <div class="bar-chart"></div>
+            </div>
+          </div>
 
-              <!-- SYSTEM -->
-              <div class="cartouche-card system-card">
-                <div class="card-title">System</div>
-                <div class="system-bars">
-                  <div class="bar-row" data-metric="cpu">
-                    <div class="bar-header">
-                      <span class="bar-label">CPU</span>
-                      <span class="bar-value ${barClass(cpuPct)}">${Math.round(cpuPct)}%</span>
-                    </div>
-                    <div class="bar-track"><div class="bar-fill ${barClass(cpuPct)}" style="width: ${cpuPct}%"></div></div>
-                    <div class="bar-histogram" data-type="cpu"></div>
-                  </div>
-                  <div class="bar-row" data-metric="memory">
-                    <div class="bar-header">
-                      <span class="bar-label">Memory</span>
-                      <span class="bar-value ${barClass(memPct)}">${Math.round(memPct)}%</span>
-                    </div>
-                    <div class="bar-track"><div class="bar-fill ${barClass(memPct)}" style="width: ${memPct}%"></div></div>
-                    <div class="bar-histogram" data-type="memory"></div>
-                  </div>
-                  <div class="bar-row" data-metric="disk">
-                    <div class="bar-header">
-                      <span class="bar-label">Disk</span>
-                      <span class="bar-value ${barClass(diskPct)}">${Math.round(diskPct)}%</span>
-                    </div>
-                    <div class="bar-track"><div class="bar-fill ${barClass(diskPct)}" style="width: ${diskPct}%"></div></div>
-                    <div class="bar-histogram" data-type="disk"></div>
-                  </div>
-                </div>
+          <!-- TRAFFIC -->
+          <div class="metric-card" id="trafficCard">
+            <h3>Network Traffic</h3>
+            <div class="traffic-row">
+              <span class="traffic-label">WAN</span>
+              <span class="traffic-value" id="wanTraffic">-- Mbps</span>
+            </div>
+            <div class="traffic-chart" id="wanChart"></div>
+            <div class="traffic-row" style="margin-top:16px">
+              <span class="traffic-label">LAN</span>
+              <span class="traffic-value" id="lanTraffic">-- Mbps</span>
+            </div>
+            <div class="traffic-chart" id="lanChart"></div>
+          </div>
+
+          <!-- GATEWAY -->
+          <div class="metric-card" id="gatewayCard">
+            <h3>Gateway Quality</h3>
+            <div class="gateway-stats">
+              <div class="gateway-stat">
+                <div class="value good" id="gwLatency">--</div>
+                <div class="label">Latency (ms)</div>
               </div>
-
-              <!-- GATEWAY -->
-              <div class="cartouche-card gateway-card">
-                <div class="card-title">Gateway</div>
-                <div class="gateway-stat">
-                  <div class="gateway-value gateway-good">${gw.latency_ms || '--'}ms</div>
-                  <div class="gateway-label">Latency</div>
-                </div>
-                <div class="gateway-stat">
-                  <div class="gateway-value gateway-good">${gw.packet_loss || 0}%</div>
-                  <div class="gateway-label">Packet Loss</div>
-                </div>
-              </div>
-
-              <!-- CONTROLS -->
-              <div class="cartouche-card controls-card">
-                <div class="card-title">Controls</div>
-                <button class="control-btn" data-action="ping">Ping WAN</button>
-                <button class="control-btn" data-action="diag">Diagnose</button>
+              <div class="gateway-stat">
+                <div class="value good" id="gwLoss">--</div>
+                <div class="label">Packet Loss (%)</div>
               </div>
             </div>
-            ` : '<p class="awaiting">Awaiting metrics...</p>'}
-          </div>`;
-        }).join('')
-      }
-    </div>
+            <div class="traffic-chart" id="gatewayChart" style="margin-top:16px"></div>
+          </div>
+        </div>
 
-    <h2>Recent Events</h2>
-    <table id=eventsTable>
-      <tr><th>Severity</th><th>Type</th><th>Summary</th><th>Time</th></tr>
-      ${eventRows || "<tr><td colspan=4>No events yet</td></tr>"}
-    </table>
+        <!-- EVENTS -->
+        <div class="events-section">
+          <div class="section-header">
+            <h2>Recent Events</h2>
+          </div>
+          <div id="eventsList"></div>
+        </div>
 
-    <p class=note>Events expire after 24 hours. Dashboard auto-refreshes every 5 minutes.</p>
+        <!-- CONTROLS -->
+        <div class="controls-section">
+          <h2>Device Controls</h2>
+          <div class="control-grid">
+            <button class="control-btn" data-action="ping">
+              <span>&#9889;</span> Ping WAN
+            </button>
+            <button class="control-btn" data-action="diagnose">
+              <span>&#128269;</span> Diagnose
+            </button>
+            <button class="control-btn danger" data-action="restart-dns">
+              <span>&#8635;</span> Restart DNS
+            </button>
+          </div>
+          <div class="control-output" id="controlOutput"></div>
+        </div>
+      `}
+    </main>
   </div>
+
   <script>
-    let refreshInterval = ${DEFAULT_REFRESH_INTERVAL};
-    let countdown = refreshInterval / 1000;
-    let countdownEl = document.getElementById('countdown');
+    // ========================================
+    // STATE
+    // ========================================
+    const State = {
+      currentDevice: '${deviceData[0]?.token || ''}',
+      selectedPeriod: '1h',
+      refreshInterval: ${DEFAULT_REFRESH_INTERVAL},
+      countdown: ${DEFAULT_REFRESH_INTERVAL / 1000},
+      devices: ${JSON.stringify(deviceData)},
+      rrdCache: {}
+    };
 
-    function formatCountdown(secs) {
-      const m = Math.floor(secs / 60);
-      const s = secs % 60;
-      return m + ':' + String(s).padStart(2, '0');
-    }
-
-    function renderSparkline(data, color) {
-      if (!data || data.length < 2) return '';
-      const w = 100, h = 24, pad = 2;
-      const max = Math.max(...data, 1);
-      const min = Math.min(...data, 0);
-      const range = max - min || 1;
-      const stepX = (w - pad * 2) / (data.length - 1);
-      const points = data.map((v, i) => {
-        const x = pad + i * stepX;
-        const y = h - pad - ((v - min) / range) * (h - pad * 2);
-        return x + ',' + y;
-      }).join(' ');
-      const areaPoints = points + ' ' + (w - pad) + ',' + (h - pad) + ' ' + pad + ',' + (h - pad);
-      return '<svg class="sparkline" viewBox="0 0 ' + w + ' ' + h + '">' +
-        '<path class="area" d="M' + areaPoints + 'Z" fill="' + color + '"/>' +
-        '<path d="M' + points + '" stroke="' + color + '"/>' +
-      '</svg>';
-    }
-
-    // Histogram for SYSTEM bars - uses gradient colors
-    function renderHistogram(data, barState) {
-      if (!data || data.length < 2) return '';
-      const w = 100, h = 28, pad = 2;
-      const max = Math.max(...data, 1);
-      const min = Math.min(...data, 0);
-      const range = max - min || 1;
-      const stepX = (w - pad * 2) / (data.length - 1);
-      const points = data.map((v, i) => {
-        const x = pad + i * stepX;
-        const y = h - pad - ((v - min) / range) * (h - pad * 2);
-        return x + ',' + y;
-      }).join(' ');
-      const areaPoints = points + ' ' + (w - pad) + ',' + (h - pad) + ' ' + pad + ',' + (h - pad);
-      // Color based on bar state (good/warn/bad)
-      const gradientId = 'hist-grad-' + Math.random().toString(36).slice(2, 8);
-      const colors = barState === 'bad' ? ['#ff4444', '#cc0000'] : barState === 'warn' ? ['#ffaa00', '#ff6600'] : ['#00ff88', '#00d9ff'];
-      return '<svg class="histogram" viewBox="0 0 ' + w + ' ' + h + '">' +
-        '<defs><linearGradient id="' + gradientId + '" x1="0%" y1="0%" x2="100%" y2="0%">' +
-          '<stop offset="0%" style="stop-color:' + colors[0] + ';stop-opacity:0.4"/>' +
-          '<stop offset="100%" style="stop-color:' + colors[1] + ';stop-opacity:0.4"/>' +
-        '</linearGradient></defs>' +
-        '<path class="area" d="M' + areaPoints + 'Z" fill="url(#' + gradientId + ')"/>' +
-        '<path d="M' + points + '" stroke="' + colors[1] + '" stroke-opacity="0.7"/>' +
-      '</svg>';
-    }
-
+    // ========================================
+    // UTILITIES
+    // ========================================
     function formatTimeSince(ts) {
+      if (!ts) return 'never';
       const diff = Date.now() - ts;
       const mins = Math.floor(diff / 60000);
       if (mins < 1) return 'just now';
-      if (mins < 60) return mins + ' min ago';
+      if (mins < 60) return mins + 'm ago';
       const hours = Math.floor(mins / 60);
-      if (hours < 24) return hours + ' hr ago';
-      const days = Math.floor(hours / 24);
-      return days + ' day' + (days > 1 ? 's' : '') + ' ago';
+      if (hours < 24) return hours + 'h ago';
+      return Math.floor(hours / 24) + 'd ago';
     }
 
-    function gaugeClass(pct) {
-      return pct > 80 ? 'metric-bad' : pct > 50 ? 'metric-warn' : 'metric-good';
+    function barClass(pct) {
+      return pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
     }
 
-    function gaugeColor(pct) {
-      return pct > 80 ? '#ff4444' : pct > 50 ? '#ffaa00' : '#00ff88';
+    function renderAreaChart(data, color1, color2, height = 32) {
+      if (!data || data.length < 2) return '';
+      const w = 200, h = height, pad = 2;
+      const max = Math.max(...data) || 1;
+      const min = Math.min(...data) || 0;
+      const range = max - min || 1;
+      const stepX = (w - pad * 2) / (data.length - 1);
+
+      const points = data.map((v, i) => {
+        const x = pad + i * stepX;
+        const y = h - pad - ((v - min) / range) * (h - pad * 2);
+        return x + ',' + y;
+      }).join(' ');
+
+      const gradId = 'g' + Math.random().toString(36).slice(2, 8);
+      return '<svg viewBox="0 0 ' + w + ' ' + h + '">' +
+        '<defs><linearGradient id="' + gradId + '" x1="0%" y1="0%" x2="100%" y2="0%">' +
+          '<stop offset="0%" stop-color="' + color1 + '" stop-opacity="0.4"/>' +
+          '<stop offset="100%" stop-color="' + color2 + '" stop-opacity="0.4"/>' +
+        '</linearGradient></defs>' +
+        '<path d="M' + pad + ',' + (h - pad) + ' L' + points + ' L' + (w - pad) + ',' + (h - pad) + 'Z" fill="url(#' + gradId + ')"/>' +
+        '<polyline points="' + points + '" fill="none" stroke="' + color2 + '" stroke-width="1.5" stroke-opacity="0.8"/>' +
+      '</svg>';
     }
 
     function extractHistory(history, type) {
@@ -614,15 +1089,112 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       }).slice(-30);
     }
 
-    function updateCountdown() {
-      countdown--;
-      if (countdown <= 0) {
-        countdown = refreshInterval / 1000;
-        fetchStatus();
-      }
-      countdownEl.textContent = formatCountdown(countdown);
+    // ========================================
+    // UI UPDATES
+    // ========================================
+    function updateKPIs(metrics) {
+      if (!metrics) return;
+
+      const sys = metrics.system || {};
+      const nev = metrics.neverhang || {};
+      const alan = metrics.alan || {};
+      const gw = metrics.gateway || {};
+
+      // Health score (composite)
+      const cpuPct = sys.cpu?.usage_percent || 0;
+      const memPct = sys.memory?.usage_percent || 0;
+      const successRate = typeof alan.success_rate_24h === 'number' ? alan.success_rate_24h : 1;
+      const healthScore = Math.round((1 - Math.max(cpuPct, memPct) / 100 * 0.3) * successRate * 100);
+      const healthEl = document.getElementById('kpiHealth');
+      healthEl.textContent = healthScore + '%';
+      healthEl.className = 'kpi-value ' + barClass(100 - healthScore);
+
+      // Circuit
+      const circuitEl = document.getElementById('kpiCircuit');
+      const circuit = nev.circuit || 'closed';
+      circuitEl.textContent = circuit.toUpperCase();
+      circuitEl.className = 'circuit-badge ' + circuit;
+
+      // A.L.A.N.
+      const alanEl = document.getElementById('kpiAlan');
+      const alanPct = Math.round(successRate * 100);
+      alanEl.textContent = alanPct + '%';
+      alanEl.className = 'kpi-value ' + (alanPct >= 90 ? 'good' : alanPct >= 70 ? 'warn' : 'bad');
+
+      // Gateway
+      const gwEl = document.getElementById('kpiGateway');
+      const latency = gw.latency_ms || 0;
+      gwEl.textContent = latency + 'ms';
+      gwEl.className = 'kpi-value ' + (latency < 50 ? 'good' : latency < 100 ? 'warn' : 'bad');
+
+      // States (if available)
+      const statesEl = document.getElementById('kpiStates');
+      statesEl.textContent = metrics.firewall_states || '--';
     }
 
+    function updateResources(metrics, history) {
+      if (!metrics) return;
+
+      const sys = metrics.system || {};
+      const bars = [
+        { id: 'cpuBar', type: 'cpu', pct: sys.cpu?.usage_percent || 0 },
+        { id: 'memoryBar', type: 'memory', pct: sys.memory?.usage_percent || 0 },
+        { id: 'diskBar', type: 'disk', pct: sys.disk?.usage_percent || 0 }
+      ];
+
+      bars.forEach(bar => {
+        const el = document.getElementById(bar.id);
+        const cls = barClass(bar.pct);
+        const colors = cls === 'bad' ? ['#ff4444', '#cc0000'] : cls === 'warn' ? ['#ffaa00', '#ff6600'] : ['#00ff88', '#00d9ff'];
+
+        el.querySelector('.bar-value').textContent = Math.round(bar.pct) + '%';
+        el.querySelector('.bar-fill').className = 'bar-fill ' + cls;
+        el.querySelector('.bar-fill').style.width = bar.pct + '%';
+
+        const histData = extractHistory(history, bar.type);
+        el.querySelector('.bar-chart').innerHTML = renderAreaChart(histData, colors[0], colors[1]);
+      });
+    }
+
+    function updateGateway(metrics) {
+      if (!metrics) return;
+      const gw = metrics.gateway || {};
+
+      const latencyEl = document.getElementById('gwLatency');
+      const latency = gw.latency_ms || 0;
+      latencyEl.textContent = latency;
+      latencyEl.className = 'value ' + (latency < 50 ? 'good' : latency < 100 ? 'warn' : 'bad');
+
+      const lossEl = document.getElementById('gwLoss');
+      const loss = gw.packet_loss || 0;
+      lossEl.textContent = loss;
+      lossEl.className = 'value ' + (loss < 1 ? 'good' : loss < 5 ? 'warn' : 'bad');
+    }
+
+    function updateEvents(events) {
+      const container = document.getElementById('eventsList');
+      if (!events || events.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:20px"><p>No events in the last 24 hours</p></div>';
+        return;
+      }
+
+      container.innerHTML = events.map(e => {
+        const hasDetails = e.raw_data && Object.keys(e.raw_data).length > 0;
+        return '<div class="event-card" data-id="' + e.id + '">' +
+          '<div class="event-header">' +
+            '<span class="event-sev ' + e.severity + '"></span>' +
+            '<span class="event-type">' + e.type + '</span>' +
+            '<span class="event-time">' + e.time + '</span>' +
+          '</div>' +
+          '<div class="event-summary">' + e.summary + '</div>' +
+          (hasDetails ? '<div class="event-details"><pre class="event-raw">' + JSON.stringify(e.raw_data, null, 2) + '</pre></div>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    // ========================================
+    // DATA FETCHING
+    // ========================================
     async function fetchStatus() {
       try {
         const res = await fetch('/api/dashboard/status');
@@ -632,102 +1204,166 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
         }
         const data = await res.json();
 
-        if (data.refreshInterval && data.refreshInterval !== refreshInterval) {
-          refreshInterval = data.refreshInterval;
-          countdown = refreshInterval / 1000;
+        // Update state
+        State.devices = data.devices;
+        if (data.refreshInterval) {
+          State.refreshInterval = data.refreshInterval;
         }
 
-        // Update device cartouches
-        const stack = document.getElementById('deviceStack');
-        stack.innerHTML = data.devices.length === 0
-          ? '<p class="awaiting">No devices registered. <a href="/register">Register a device</a></p>'
-          : data.devices.map(d => {
-              const m = d.metrics || {};
-              const sys = m.system || {};
-              const nev = m.neverhang || {};
-              const alan = m.alan || {};
-              const gw = m.gateway || {};
-              const cpuPct = sys.cpu?.usage_percent || 0;
-              const memPct = sys.memory?.usage_percent || 0;
-              const diskPct = sys.disk?.usage_percent || 0;
-              const lastSeen = d.lastSeen ? formatTimeSince(d.lastSeen) : 'never';
-              const successRate = Math.round((typeof alan.success_rate_24h === 'number' && !isNaN(alan.success_rate_24h) ? alan.success_rate_24h : 1) * 100);
-              const barClass = (pct) => pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
+        // Find current device
+        const device = data.devices.find(d => d.token === State.currentDevice) || data.devices[0];
+        if (device) {
+          updateKPIs(device.metrics);
+          updateResources(device.metrics, device.metricsHistory);
+          updateGateway(device.metrics);
+        }
 
-              return '<div class="device-cartouche" data-token="' + d.token + '">' +
-                '<div class="cartouche-header">' +
-                  '<span class="device-name">' + d.name + '</span>' +
-                  '<span class="device-seen">Last seen: ' + lastSeen + '</span>' +
-                '</div>' +
-                (d.metrics ? (
-                  '<div class="cartouche-cards">' +
-                    // NEVERHANG
-                    '<div class="cartouche-card neverhang-card">' +
-                      '<div class="card-title">NEVERHANG</div>' +
-                      '<span class="circuit-tag ' + (nev.circuit || 'closed') + '">' + (nev.circuit || 'closed').toUpperCase() + '</span>' +
-                      '<div class="nev-stats">' + (nev.failures || 0) + ' failures<br>' + (nev.recoveries || 0) + ' recoveries</div>' +
-                    '</div>' +
-                    // A.L.A.N.
-                    '<div class="cartouche-card alan-card">' +
-                      '<div class="card-title">A.L.A.N.</div>' +
-                      '<div class="alan-big">' + successRate + '%</div>' +
-                      '<div class="alan-label">success rate</div>' +
-                      '<div class="alan-stats">' + (alan.queries_24h || 0) + ' queries (24h)</div>' +
-                    '</div>' +
-                    // SYSTEM
-                    '<div class="cartouche-card system-card">' +
-                      '<div class="card-title">System</div>' +
-                      '<div class="system-bars">' +
-                        '<div class="bar-row" data-metric="cpu">' +
-                          '<div class="bar-header"><span class="bar-label">CPU</span><span class="bar-value ' + barClass(cpuPct) + '">' + Math.round(cpuPct) + '%</span></div>' +
-                          '<div class="bar-track"><div class="bar-fill ' + barClass(cpuPct) + '" style="width:' + cpuPct + '%"></div></div>' +
-                          '<div class="bar-histogram" data-type="cpu">' + renderHistogram(extractHistory(d.metricsHistory, 'cpu'), barClass(cpuPct)) + '</div>' +
-                        '</div>' +
-                        '<div class="bar-row" data-metric="memory">' +
-                          '<div class="bar-header"><span class="bar-label">Memory</span><span class="bar-value ' + barClass(memPct) + '">' + Math.round(memPct) + '%</span></div>' +
-                          '<div class="bar-track"><div class="bar-fill ' + barClass(memPct) + '" style="width:' + memPct + '%"></div></div>' +
-                          '<div class="bar-histogram" data-type="memory">' + renderHistogram(extractHistory(d.metricsHistory, 'memory'), barClass(memPct)) + '</div>' +
-                        '</div>' +
-                        '<div class="bar-row" data-metric="disk">' +
-                          '<div class="bar-header"><span class="bar-label">Disk</span><span class="bar-value ' + barClass(diskPct) + '">' + Math.round(diskPct) + '%</span></div>' +
-                          '<div class="bar-track"><div class="bar-fill ' + barClass(diskPct) + '" style="width:' + diskPct + '%"></div></div>' +
-                          '<div class="bar-histogram" data-type="disk">' + renderHistogram(extractHistory(d.metricsHistory, 'disk'), barClass(diskPct)) + '</div>' +
-                        '</div>' +
-                      '</div>' +
-                    '</div>' +
-                    // GATEWAY
-                    '<div class="cartouche-card gateway-card">' +
-                      '<div class="card-title">Gateway</div>' +
-                      '<div class="gateway-stat"><div class="gateway-value gateway-good">' + (gw.latency_ms || '--') + 'ms</div><div class="gateway-label">Latency</div></div>' +
-                      '<div class="gateway-stat"><div class="gateway-value gateway-good">' + (gw.packet_loss || 0) + '%</div><div class="gateway-label">Packet Loss</div></div>' +
-                    '</div>' +
-                    // CONTROLS
-                    '<div class="cartouche-card controls-card">' +
-                      '<div class="card-title">Controls</div>' +
-                      '<button class="control-btn" data-action="ping">Ping WAN</button>' +
-                      '<button class="control-btn" data-action="diag">Diagnose</button>' +
-                    '</div>' +
-                  '</div>'
-                ) : '<p class="awaiting">Awaiting metrics...</p>') +
-              '</div>';
-            }).join('');
+        updateEvents(data.events);
 
-        // Update events table
-        const evtTable = document.getElementById('eventsTable');
-        const evtRows = data.events.map(e =>
-          '<tr data-event><td><span class="sev-' + e.severity + '">' + e.severity + '</span></td>' +
-          '<td>' + e.type + '</td><td>' + e.summary + '</td><td>' + e.time + '</td></tr>'
-        ).join('') || '<tr><td colspan=4>No events yet</td></tr>';
-        evtTable.innerHTML = '<tr><th>Severity</th><th>Type</th><th>Summary</th><th>Time</th></tr>' + evtRows;
+        // Update device list
+        updateDeviceList(data.devices);
 
       } catch (err) {
-        console.error('Failed to refresh:', err);
+        console.error('Fetch error:', err);
       }
     }
 
-    // Fetch immediately on load, then every 5 minutes
+    async function fetchRrd(metric, period) {
+      const cacheKey = metric + '-' + period;
+      if (State.rrdCache[cacheKey]) {
+        return State.rrdCache[cacheKey];
+      }
+      try {
+        const res = await fetch('/api/dashboard/rrd/' + metric + '?period=' + period);
+        if (!res.ok) return null;
+        const data = await res.json();
+        State.rrdCache[cacheKey] = data;
+        return data;
+      } catch (err) {
+        console.error('RRD fetch error:', err);
+        return null;
+      }
+    }
+
+    async function executeAction(action) {
+      const btn = document.querySelector('[data-action="' + action + '"]');
+      if (!btn) return;
+
+      btn.classList.add('loading');
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/dashboard/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, device_token: State.currentDevice })
+        });
+        const data = await res.json();
+
+        const output = document.getElementById('controlOutput');
+        output.textContent = data.message || JSON.stringify(data, null, 2);
+        output.classList.add('visible');
+      } catch (err) {
+        console.error('Action error:', err);
+      } finally {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+      }
+    }
+
+    function updateDeviceList(devices) {
+      const list = document.getElementById('deviceList');
+      list.innerHTML = devices.map(d =>
+        '<li class="' + (d.token === State.currentDevice ? 'active' : '') + '" data-token="' + d.token + '">' +
+          '<span class="device-name">' + d.name + '</span>' +
+          '<span class="device-status">' + (d.timeSince || 'never') + '</span>' +
+        '</li>'
+      ).join('');
+    }
+
+    // ========================================
+    // EVENT HANDLERS
+    // ========================================
+    function initEventHandlers() {
+      // Sidebar toggle (mobile)
+      document.getElementById('menuToggle').addEventListener('click', () => {
+        document.getElementById('sidebar').classList.toggle('open');
+      });
+      document.getElementById('sidebarOverlay').addEventListener('click', () => {
+        document.getElementById('sidebar').classList.remove('open');
+      });
+
+      // Device select (dropdown)
+      document.getElementById('deviceSelect').addEventListener('change', (e) => {
+        State.currentDevice = e.target.value;
+        fetchStatus();
+        // Update sidebar active state
+        document.querySelectorAll('.device-list li').forEach(li => {
+          li.classList.toggle('active', li.dataset.token === State.currentDevice);
+        });
+      });
+
+      // Device list (sidebar)
+      document.getElementById('deviceList').addEventListener('click', (e) => {
+        const li = e.target.closest('li');
+        if (!li) return;
+        State.currentDevice = li.dataset.token;
+        document.getElementById('deviceSelect').value = State.currentDevice;
+        document.querySelectorAll('.device-list li').forEach(l => l.classList.remove('active'));
+        li.classList.add('active');
+        fetchStatus();
+        document.getElementById('sidebar').classList.remove('open');
+      });
+
+      // Period selector
+      document.querySelectorAll('.period-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          e.target.classList.add('active');
+          State.selectedPeriod = e.target.dataset.period;
+          State.rrdCache = {}; // Clear cache on period change
+          fetchStatus();
+        });
+      });
+
+      // Event cards (expand/collapse)
+      document.getElementById('eventsList').addEventListener('click', (e) => {
+        const card = e.target.closest('.event-card');
+        if (card) card.classList.toggle('expanded');
+      });
+
+      // Control buttons
+      document.querySelectorAll('.control-btn[data-action]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          executeAction(btn.dataset.action);
+        });
+      });
+    }
+
+    // ========================================
+    // COUNTDOWN & REFRESH
+    // ========================================
+    function formatCountdown(secs) {
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function tick() {
+      State.countdown--;
+      if (State.countdown <= 0) {
+        State.countdown = State.refreshInterval / 1000;
+        fetchStatus();
+      }
+      document.getElementById('countdown').textContent = formatCountdown(State.countdown);
+    }
+
+    // ========================================
+    // INIT
+    // ========================================
+    initEventHandlers();
     fetchStatus();
-    setInterval(updateCountdown, 1000);
+    setInterval(tick, 1000);
   </script>
 </body>
 </html>`);
