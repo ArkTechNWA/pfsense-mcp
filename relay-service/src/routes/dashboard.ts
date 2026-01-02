@@ -664,12 +664,14 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
     .bar-fill.warn { background: var(--gradient-warn); }
     .bar-fill.bad { background: var(--gradient-bad); }
     .bar-chart {
-      height: 32px;
-      margin-top: 6px;
+      width: 100%;
+      height: 40px;
+      margin-top: 8px;
     }
     .bar-chart svg {
       width: 100%;
       height: 100%;
+      display: block;
     }
 
     /* Traffic charts */
@@ -1053,9 +1055,9 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       return pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
     }
 
-    function renderAreaChart(data, color1, color2, height = 32) {
+    function renderAreaChart(data, color1, color2, height = 40) {
       if (!data || data.length < 2) return '';
-      const w = 200, h = height, pad = 2;
+      const w = 400, h = height, pad = 2;
       const max = Math.max(...data) || 1;
       const min = Math.min(...data) || 0;
       const range = max - min || 1;
@@ -1068,13 +1070,13 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       }).join(' ');
 
       const gradId = 'g' + Math.random().toString(36).slice(2, 8);
-      return '<svg viewBox="0 0 ' + w + ' ' + h + '">' +
+      return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
         '<defs><linearGradient id="' + gradId + '" x1="0%" y1="0%" x2="100%" y2="0%">' +
-          '<stop offset="0%" stop-color="' + color1 + '" stop-opacity="0.4"/>' +
-          '<stop offset="100%" stop-color="' + color2 + '" stop-opacity="0.4"/>' +
+          '<stop offset="0%" stop-color="' + color1 + '" stop-opacity="0.5"/>' +
+          '<stop offset="100%" stop-color="' + color2 + '" stop-opacity="0.5"/>' +
         '</linearGradient></defs>' +
         '<path d="M' + pad + ',' + (h - pad) + ' L' + points + ' L' + (w - pad) + ',' + (h - pad) + 'Z" fill="url(#' + gradId + ')"/>' +
-        '<polyline points="' + points + '" fill="none" stroke="' + color2 + '" stroke-width="1.5" stroke-opacity="0.8"/>' +
+        '<polyline points="' + points + '" fill="none" stroke="' + color2 + '" stroke-width="2" stroke-opacity="0.9"/>' +
       '</svg>';
     }
 
