@@ -17,10 +17,12 @@ import cookieParser from "cookie-parser";
 import * as db from "./db";
 import * as alerter from "./alerter";
 import { getQueueStatus } from "./executor";
+import { startPeriodicAnalysis } from "./alan";
 import webhookRoutes from "./routes/webhook";
 import registerRoutes from "./routes/register";
 import adminRoutes from "./routes/admin";
 import dashboardRoutes from "./routes/dashboard";
+import guardianV2Routes from "./routes/guardian-v2";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -47,6 +49,7 @@ app.use(webhookRoutes);
 app.use(registerRoutes);
 app.use(adminRoutes);
 app.use(dashboardRoutes);
+app.use(guardianV2Routes);
 
 // Health check
 app.get("/health", (req, res) => {
@@ -193,10 +196,14 @@ async function main() {
   console.log("[Server] Verifying SMTP connection...");
   await alerter.verifySmtp();
 
+  // Start A.L.A.N. periodic analysis (every hour)
+  startPeriodicAnalysis(60 * 60 * 1000);
+
   // Start server
   app.listen(PORT, HOST, () => {
     console.log(`[Server] Listening on ${HOST}:${PORT}`);
     console.log(`[Server] Registration: http://${HOST}:${PORT}/register`);
+    console.log(`[Server] Guardian v2 API: http://${HOST}:${PORT}/api/v2/health`);
     console.log("[Server] Ready for webhooks");
   });
 

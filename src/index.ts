@@ -27,11 +27,500 @@ const SERVER_VERSION = "0.1.1";
 // Guardian relay configuration
 const GUARDIAN_RELAY_URL = process.env.GUARDIAN_RELAY_URL || "https://pfsense-mcp.arktechnwa.com";
 const GUARDIAN_ADMIN_KEY = process.env.GUARDIAN_ADMIN_KEY || "";
+const DEVICE_TOKEN = process.env.PFSENSE_DEVICE_TOKEN || "default";
+
+// Guardian v2: Prefer relay cache over direct pfSense queries
+const USE_RELAY_CACHE = process.env.PFSENSE_USE_RELAY_CACHE !== "false";
+const MCP_CLIENT_ID = `pfsense-mcp-${process.pid}`;
 
 // Global state
 let db: Database.Database;
 let client: PfSenseClient;
 let neverhang: NeverhangManager;
+
+// RRD metric configuration
+// RRD metric definitions with column indices and transform functions
+// Each metric specifies which columns to use and how to compute the final value
+const RRD_METRIC_MAP: Record<string, {
+  file: string;
+  transform: (values: number[]) => number;
+  description: string;
+}> = {
+  cpu: {
+    file: "system-processor.rrd",
+    // Columns: user(0), nice(1), system(2), interrupt(3), processes(4)
+    // Sum user + nice + system + interrupt, skip processes (it's a count, not %)
+    transform: (v) => (v[0] || 0) + (v[1] || 0) + (v[2] || 0) + (v[3] || 0),
+    description: "CPU usage %"
+  },
+  memory: {
+    file: "system-memory.rrd",
+    // Columns: active(0), inactive(1), free(2), cache(3), wire(4), userwire(5), laundry(6), buffers(7)
+    // Used memory = 100 - free
+    transform: (v) => 100 - (v[2] || 0),
+    description: "Memory usage %"
+  },
+  states: {
+    file: "system-states.rrd",
+    // Columns: pfrate(0), pfstates(1), pfnat(2), srcip(3), dstip(4)
+    // Use pfstates (index 1) - the actual connection count
+    transform: (v) => v[1] || 0,
+    description: "Firewall states count"
+  },
+  traffic_lan: {
+    file: "lan-traffic.rrd",
+    // Sum inpass + outpass for total throughput (bytes/sec)
+    transform: (v) => (v[0] || 0) + (v[1] || 0),
+    description: "LAN traffic bytes/sec"
+  },
+  traffic_wan: {
+    file: "wan-traffic.rrd",
+    // Sum inpass + outpass for total throughput (bytes/sec)
+    transform: (v) => (v[0] || 0) + (v[1] || 0),
+    description: "WAN traffic bytes/sec"
+  },
+  gateway_quality: {
+    file: "WAN_DHCP-quality.rrd",
+    // Columns: loss(0), delay(1) - use delay (latency in ms)
+    transform: (v) => v[1] || 0,
+    description: "Gateway latency ms"
+  },
+};
+
+const RRD_PERIOD_MAP: Record<string, string> = {
+  "1h": "end-1h",
+  "4h": "end-4h",
+  "1d": "end-1d",
+  "1w": "end-1w",
+  "1m": "end-1m",
+};
+
+// Delay between RRD fetches to avoid CPU spikes on ARM
+const RRD_FETCH_DELAY_MS = 500;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// =============================================================================
+// RRD INCREMENTAL SYNC (immutable historical data)
+// =============================================================================
+
+interface RrdPoint {
+  timestamp: number;
+  value: number;
+}
+
+/**
+ * Get last timestamps from relay (what we already have)
+ */
+async function getRelayLastTimestamps(): Promise<Record<string, number>> {
+  if (!GUARDIAN_ADMIN_KEY || !GUARDIAN_RELAY_URL) return {};
+
+  try {
+    const res = await fetch(`${GUARDIAN_RELAY_URL}/api/admin/points/${DEVICE_TOKEN}/last`, {
+      headers: { "X-Admin-Key": GUARDIAN_ADMIN_KEY },
+    });
+    if (!res.ok) return {};
+    const data = await res.json() as { last_timestamps: Record<string, number> };
+    return data.last_timestamps || {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Fetch RRD data from pfSense since a timestamp
+ * Returns timestamp/value pairs for incremental sync
+ */
+async function fetchRrdDataSince(metric: string, sinceTs?: number): Promise<RrdPoint[]> {
+  const config = RRD_METRIC_MAP[metric];
+  if (!config) throw new Error(`Unknown metric: ${metric}`);
+
+  // If we have a last timestamp, start from there; otherwise get 1 month of history
+  const startTime = sinceTs ? Math.floor(sinceTs / 1000) : "end-1m";
+
+  // Use nice to reduce CPU priority
+  console.error(`[RRD] Fetching ${metric} since ${sinceTs ? new Date(sinceTs).toISOString() : "1 month ago"}...`);
+  const cmdResponse = await client.runCommand(
+    `nice -n 19 rrdtool fetch /var/db/rrd/${config.file} AVERAGE --start ${startTime}`
+  );
+
+  const output = cmdResponse.data?.output || "";
+  if (!output) return [];
+
+  // Parse rrdtool output: "timestamp: value1 value2 ..."
+  const lines = output.trim().split("\n");
+  const points: RrdPoint[] = [];
+
+  for (const line of lines) {
+    // Skip header line and lines with all NaN
+    if (!line.includes(":") || line.includes("nan nan nan")) continue;
+
+    const match = line.match(/^(\d+):\s+(.+)$/);
+    if (!match) continue;
+
+    const timestamp = parseInt(match[1]) * 1000; // Convert to ms
+    const rawValues = match[2].trim().split(/\s+/);
+
+    // Parse all values into numbers
+    const values: number[] = rawValues.map(v => {
+      const val = parseFloat(v);
+      return (!isNaN(val) && isFinite(val)) ? val : 0;
+    });
+
+    // Check if we have any valid data (not all zeros from NaN)
+    const hasValid = rawValues.some(v => !v.includes("nan"));
+
+    // Apply metric-specific transform
+    const result = config.transform(values);
+
+    // Only include points newer than sinceTs (if provided) and with valid data
+    if (hasValid && (!sinceTs || timestamp > sinceTs)) {
+      points.push({ timestamp, value: result });
+    }
+  }
+
+  console.error(`[RRD] Fetched ${metric}: ${points.length} new points`);
+  return points;
+}
+
+/**
+ * Push new points to relay (incremental)
+ */
+async function pushPointsToRelay(metric: string, points: RrdPoint[]): Promise<number> {
+  if (!GUARDIAN_ADMIN_KEY || !GUARDIAN_RELAY_URL || points.length === 0) return 0;
+
+  const res = await fetch(`${GUARDIAN_RELAY_URL}/api/admin/points`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Admin-Key": GUARDIAN_ADMIN_KEY,
+    },
+    body: JSON.stringify({
+      device_token: DEVICE_TOKEN,
+      metric,
+      points,
+    }),
+  });
+
+  if (!res.ok) {
+    console.error(`[RRD] Failed to push ${metric}: ${res.status}`);
+    return 0;
+  }
+
+  const data = await res.json() as { inserted: number };
+  console.error(`[RRD] Pushed ${metric}: ${data.inserted} new points stored`);
+  return data.inserted;
+}
+
+/**
+ * Incremental sync: fetch only new data since last relay timestamp
+ */
+async function syncRrdData(): Promise<{ synced: number; points: number }> {
+  if (!GUARDIAN_ADMIN_KEY || !GUARDIAN_RELAY_URL) {
+    return { synced: 0, points: 0 };
+  }
+
+  // Get what relay already has
+  const lastTimestamps = await getRelayLastTimestamps();
+  const metrics = Object.keys(RRD_METRIC_MAP);
+
+  let totalSynced = 0;
+  let totalPoints = 0;
+
+  for (let i = 0; i < metrics.length; i++) {
+    const metric = metrics[i];
+    const lastTs = lastTimestamps[metric];
+
+    try {
+      const points = await fetchRrdDataSince(metric, lastTs);
+      if (points.length > 0) {
+        const inserted = await pushPointsToRelay(metric, points);
+        totalPoints += inserted;
+        totalSynced++;
+      }
+    } catch (err) {
+      console.error(`[RRD] Error syncing ${metric}:`, err);
+    }
+
+    // Gentle delay between fetches (skip after last one)
+    if (i < metrics.length - 1) {
+      await sleep(RRD_FETCH_DELAY_MS);
+    }
+  }
+
+  return { synced: totalSynced, points: totalPoints };
+}
+
+// =============================================================================
+// LEGACY BLOB FUNCTIONS (for backward compatibility during migration)
+// =============================================================================
+
+/**
+ * Fetch RRD data from pfSense (LEGACY - blob per period)
+ */
+async function fetchRrdData(metric: string, period: string): Promise<number[]> {
+  const config = RRD_METRIC_MAP[metric];
+  if (!config) throw new Error(`Unknown metric: ${metric}`);
+
+  const timeSpec = RRD_PERIOD_MAP[period];
+  if (!timeSpec) throw new Error(`Unknown period: ${period}`);
+
+  const cmdResponse = await client.runCommand(
+    `nice -n 19 rrdtool fetch /var/db/rrd/${config.file} AVERAGE --start ${timeSpec}`
+  );
+
+  const output = cmdResponse.data?.output || "";
+  if (!output) throw new Error("No data returned from rrdtool");
+
+  const lines = output.trim().split("\n");
+  const dataLines = lines.filter((l) => l.includes(":") && !l.includes("nan nan nan"));
+
+  const values: number[] = [];
+  for (const line of dataLines) {
+    const parts = line.trim().split(/\s+/);
+    let sum = 0;
+    for (let i = 1; i < parts.length; i++) {
+      const val = parseFloat(parts[i]);
+      if (!isNaN(val)) sum += val;
+    }
+    if (sum > 0 || parts.length > 1) values.push(sum);
+  }
+
+  return values;
+}
+
+/**
+ * Push RRD data to Guardian relay (LEGACY - blob per period)
+ */
+async function pushRrdToRelay(metric: string, period: string, data: number[]): Promise<void> {
+  if (!GUARDIAN_ADMIN_KEY || !GUARDIAN_RELAY_URL) return;
+
+  await fetch(`${GUARDIAN_RELAY_URL}/api/admin/rrd`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Admin-Key": GUARDIAN_ADMIN_KEY,
+    },
+    body: JSON.stringify({
+      device_token: DEVICE_TOKEN,
+      metric,
+      period,
+      data,
+    }),
+  });
+}
+
+/**
+ * Check for pending commands and execute them
+ */
+async function checkAndExecuteCommands(): Promise<{ checked: boolean; executed: number; error?: string }> {
+  if (!GUARDIAN_ADMIN_KEY || !GUARDIAN_RELAY_URL) {
+    return { checked: false, executed: 0, error: "missing_env_vars" };
+  }
+
+  try {
+    // Check in with relay to get pending commands
+    const checkinRes = await fetch(`${GUARDIAN_RELAY_URL}/api/admin/checkin`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Key": GUARDIAN_ADMIN_KEY,
+      },
+      body: JSON.stringify({ device_token: DEVICE_TOKEN, results: [] }),
+    });
+
+    if (!checkinRes.ok) {
+      return { checked: false, executed: 0, error: `checkin_failed_${checkinRes.status}` };
+    }
+
+    const checkinData = await checkinRes.json() as { commands?: Array<{ id: number; command: string }> };
+    const commands = checkinData.commands;
+    if (!commands || commands.length === 0) {
+      return { checked: true, executed: 0 };
+    }
+
+    const results: Array<{ id: number; result: string }> = [];
+
+    for (let i = 0; i < commands.length; i++) {
+      const cmd = commands[i];
+      try {
+        // Handle fetch-rrd commands
+        if (cmd.command.startsWith("fetch-rrd:")) {
+          const [, metric, period] = cmd.command.split(":");
+          const data = await fetchRrdData(metric, period);
+          await pushRrdToRelay(metric, period, data);
+          results.push({ id: cmd.id, result: "success" });
+
+          // Gentle delay between fetches to avoid CPU spikes on ARM
+          if (i < commands.length - 1) {
+            await sleep(RRD_FETCH_DELAY_MS);
+          }
+        } else {
+          results.push({ id: cmd.id, result: "unknown_command" });
+        }
+      } catch (err) {
+        results.push({ id: cmd.id, result: `error: ${err instanceof Error ? err.message : err}` });
+      }
+    }
+
+    // Report results back to relay
+    if (results.length > 0) {
+      await fetch(`${GUARDIAN_RELAY_URL}/api/admin/checkin`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Admin-Key": GUARDIAN_ADMIN_KEY,
+        },
+        body: JSON.stringify({ device_token: DEVICE_TOKEN, results }),
+      });
+    }
+    return { checked: true, executed: results.filter(r => r.result === "success").length };
+  } catch (err) {
+    return { checked: false, executed: 0, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// =============================================================================
+// GUARDIAN V2 RELAY QUERY
+// =============================================================================
+
+interface RelayQueryResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  cache_info: {
+    cached: boolean;
+    cached_at?: number;
+    ttl_remaining_ms?: number;
+    source?: string;
+  };
+}
+
+/**
+ * Query the relay cache for a tool's data
+ * Returns null if relay doesn't have cached data or is unavailable
+ */
+async function queryRelayCache<T>(tool: string): Promise<{ data: T; cache_info: RelayQueryResponse["cache_info"] } | null> {
+  if (!USE_RELAY_CACHE || !GUARDIAN_RELAY_URL) {
+    return null;
+  }
+
+  try {
+    const url = new URL(`/api/v2/query/${tool}`, GUARDIAN_RELAY_URL);
+    url.searchParams.set("device_token", DEVICE_TOKEN);
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        "X-Device-Token": DEVICE_TOKEN,
+        "X-Client-Id": MCP_CLIENT_ID,
+      },
+      signal: AbortSignal.timeout(5000), // 5 second timeout for relay
+    });
+
+    if (!response.ok) {
+      console.error(`[Relay] Query ${tool} failed: ${response.status}`);
+      return null;
+    }
+
+    const result = await response.json() as RelayQueryResponse<T>;
+
+    if (result.success && result.data) {
+      console.error(`[Relay] Cache hit for ${tool} (TTL: ${result.cache_info.ttl_remaining_ms}ms)`);
+      return { data: result.data, cache_info: result.cache_info };
+    }
+
+    console.error(`[Relay] Cache miss for ${tool}: ${result.error || "no data"}`);
+    return null;
+  } catch (error) {
+    console.error(`[Relay] Query ${tool} error:`, error);
+    return null;
+  }
+}
+
+interface CommandQueueResponse {
+  success: boolean;
+  command_id?: number;
+  status?: string;
+  result?: unknown;
+  error?: string;
+}
+
+/**
+ * Queue a WRITE command through the relay for Guardian to execute
+ * Returns command_id for async tracking, or polls for result if waitForResult=true
+ */
+async function queueRelayCommand(
+  tool: string,
+  params: Record<string, unknown>,
+  waitForResult: boolean = false,
+  timeoutMs: number = 30000
+): Promise<CommandQueueResponse | null> {
+  if (!USE_RELAY_CACHE || !GUARDIAN_RELAY_URL) {
+    return null;
+  }
+
+  try {
+    // Queue the command
+    const queueUrl = new URL("/api/v2/command", GUARDIAN_RELAY_URL);
+    const queueResponse = await fetch(queueUrl.toString(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Device-Token": DEVICE_TOKEN,
+        "X-Client-Id": MCP_CLIENT_ID,
+      },
+      body: JSON.stringify({
+        device_token: DEVICE_TOKEN,
+        tool,
+        params,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!queueResponse.ok) {
+      const error = await queueResponse.json() as { error?: string; message?: string };
+      console.error(`[Relay] Command queue failed: ${error.message || error.error}`);
+      return null;
+    }
+
+    const queued = await queueResponse.json() as CommandQueueResponse;
+    console.error(`[Relay] Command queued: ${tool} (id: ${queued.command_id})`);
+
+    if (!waitForResult) {
+      return queued;
+    }
+
+    // Poll for result
+    const startTime = Date.now();
+    const statusUrl = new URL(`/api/v2/command/${queued.command_id}`, GUARDIAN_RELAY_URL);
+
+    while (Date.now() - startTime < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Poll every 1s
+
+      const statusResponse = await fetch(statusUrl.toString(), {
+        headers: {
+          "X-Device-Token": DEVICE_TOKEN,
+          "X-Client-Id": MCP_CLIENT_ID,
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (!statusResponse.ok) continue;
+
+      const status = await statusResponse.json() as CommandQueueResponse;
+
+      if (status.status === "executed") {
+        console.error(`[Relay] Command ${queued.command_id} completed`);
+        return status;
+      }
+    }
+
+    console.error(`[Relay] Command ${queued.command_id} timed out waiting for result`);
+    return { success: false, command_id: queued.command_id, status: "timeout", error: "Command queued but execution timed out" };
+  } catch (error) {
+    console.error(`[Relay] Command queue error:`, error);
+    return null;
+  }
+}
 
 /**
  * Execute a tool with NEVERHANG protection
@@ -159,7 +648,6 @@ async function executeToolInner(
 
       // Push metrics to Guardian relay (fire and forget)
       if (GUARDIAN_ADMIN_KEY && GUARDIAN_RELAY_URL) {
-        const deviceToken = process.env.PFSENSE_DEVICE_TOKEN || "default";
         fetch(`${GUARDIAN_RELAY_URL}/api/admin/metrics`, {
           method: "POST",
           headers: {
@@ -167,12 +655,33 @@ async function executeToolInner(
             "X-Admin-Key": GUARDIAN_ADMIN_KEY,
           },
           body: JSON.stringify({
-            device_token: deviceToken,
+            device_token: DEVICE_TOKEN,
             metrics: healthData,
           }),
         }).catch(() => {
           // Silently fail - don't break health check for relay issues
         });
+
+        // Incremental RRD sync - fetch only new data since last relay timestamp
+        // Niced and eased to be gentle on the ARM CPU
+        let syncStatus: { synced: number; points: number; error?: string } = { synced: 0, points: 0 };
+        try {
+          syncStatus = await syncRrdData();
+        } catch (err) {
+          console.error("[RRD] Error in syncRrdData:", err);
+          syncStatus = { synced: 0, points: 0, error: err instanceof Error ? err.message : String(err) };
+        }
+        (healthData as Record<string, unknown>).rrd_sync = syncStatus;
+
+        // Check for pending commands (legacy - still needed for restart-dns etc)
+        let commandStatus: { checked: boolean; executed: number; error?: string } = { checked: false, executed: 0, error: "not_run" };
+        try {
+          commandStatus = await checkAndExecuteCommands();
+        } catch (err) {
+          console.error("[Commands] Error in checkAndExecuteCommands:", err);
+          commandStatus = { checked: false, executed: 0, error: err instanceof Error ? err.message : String(err) };
+        }
+        (healthData as Record<string, unknown>).commands = commandStatus;
       }
 
       return healthData;
@@ -182,11 +691,42 @@ async function executeToolInner(
     // SYSTEM
     // ========================================================================
     case "pf_system_info": {
+      // Try relay cache first
+      const cached = await queryRelayCache<{ hostname?: string; platform?: string; version?: string }>("pf_system_info");
+      if (cached) {
+        return { ...cached.data, _source: "relay_cache" };
+      }
+
+      // Fall back to direct pfSense query
       const response = await client.getSystemInfo();
       return response.data;
     }
 
     case "pf_system_status": {
+      // Try relay cache first (Guardian v2 pushes this as hot data)
+      interface SystemStatusCache {
+        uptime?: string;
+        uptime_seconds?: number;
+        platform?: string;
+        version?: string;
+        cpu?: { model?: string; count?: number; usage_percent?: number; load_avg?: number[]; temperature_c?: number | null };
+        memory?: { usage_percent?: number; total_mb?: number; used_mb?: number };
+        disk?: { usage_percent?: number; total_gb?: number; used_gb?: number };
+      }
+      const cached = await queryRelayCache<SystemStatusCache>("pf_system_status");
+      if (cached) {
+        const d = cached.data;
+        return {
+          uptime: d.uptime ?? null,
+          platform: d.platform ?? null,
+          cpu: d.cpu ?? null,
+          memory: d.memory ?? null,
+          disk: d.disk ?? null,
+          _source: "relay_cache",
+        };
+      }
+
+      // Fall back to direct pfSense query
       const response = await client.getSystemStatus();
       const data = response.data as unknown as Record<string, unknown>;
       if (!data) return { error: "No data returned" };
@@ -219,6 +759,16 @@ async function executeToolInner(
     // INTERFACES
     // ========================================================================
     case "pf_interface_list": {
+      // Try relay cache first
+      type InterfaceListCache = Record<string, unknown>;
+      const cached = await queryRelayCache<InterfaceListCache>("pf_interface_list");
+      if (cached) {
+        // Convert from object to array format
+        const interfaces = Object.values(cached.data);
+        return interfaces.length > 0 ? interfaces : cached.data;
+      }
+
+      // Fall back to direct pfSense query
       const response = await client.getInterfaces();
       return response.data;
     }
@@ -226,6 +776,19 @@ async function executeToolInner(
     case "pf_interface_status": {
       const iface = args.interface as string;
       if (!iface) throw new Error("interface parameter required");
+
+      // Try relay cache first
+      type InterfaceStatusCache = Record<string, { name: string; status: string; ip_address?: string; [key: string]: unknown }>;
+      const cached = await queryRelayCache<InterfaceStatusCache>("pf_interface_status");
+      if (cached) {
+        const ifaceData = cached.data[iface] || cached.data[iface.toLowerCase()];
+        if (ifaceData) {
+          return { ...ifaceData, _source: "relay_cache" };
+        }
+        // Interface not in cache, fall through to direct query
+      }
+
+      // Fall back to direct pfSense query
       const response = await client.getInterfaceStatuses();
       const statuses = (response.data || []) as unknown as Array<Record<string, unknown>>;
       // Find by interface name (wan, lan) or device name (mvneta0, igb0)
@@ -284,30 +847,69 @@ async function executeToolInner(
     // DHCP
     // ========================================================================
     case "pf_dhcp_leases": {
+      // Try relay cache first (Guardian v2 pushes this as warm data)
+      type DhcpLeaseCache = Array<{ ip: string; mac: string; hostname?: string; status: string; type: string; start?: string; end?: string }>;
+      const cachedLeases = await queryRelayCache<DhcpLeaseCache>("pf_dhcp_leases");
+      if (cachedLeases && Array.isArray(cachedLeases.data)) {
+        let leases = cachedLeases.data;
+        // Filter by status if requested
+        const status = args.status as string | undefined;
+        if (status && status !== "all") {
+          leases = leases.filter((l) => l.status === status);
+        }
+        return leases.map((l) => ({
+          ip: l.ip,
+          mac: l.mac,
+          hostname: l.hostname || "(unknown)",
+          status: l.status,
+          type: l.type,
+          start: l.start,
+          end: l.end,
+          _source: "relay_cache",
+        }));
+      }
+
+      // Fall back to direct pfSense query
+      // Note: pfSense API uses different field names (starts/ends/act vs start/end/status)
       const response = await client.getDhcpLeases();
       let leases = response.data || [];
 
-      // Filter by status
+      // Filter by status (API uses 'act' field: static, dynamic, active, expired)
       const status = args.status as string | undefined;
       if (status && status !== "all") {
-        leases = leases.filter((l) => l.status === status);
+        leases = leases.filter((l) => {
+          const entry = l as unknown as Record<string, unknown>;
+          const leaseStatus = (entry.act || l.status || "") as string;
+          return leaseStatus === status || leaseStatus.includes(status);
+        });
       }
 
-      return leases.map((l) => ({
-        ip: l.ip,
-        mac: l.mac,
-        hostname: l.hostname || "(unknown)",
-        status: l.status,
-        type: l.type,
-        start: l.start,
-        end: l.end,
-      }));
+      return leases.map((l) => {
+        const entry = l as unknown as Record<string, unknown>;
+        return {
+          ip: l.ip,
+          mac: l.mac,
+          hostname: l.hostname || "(unknown)",
+          status: (entry.act || l.status || "unknown") as string,
+          type: l.type || "dynamic",
+          start: (entry.starts || l.start || null) as string | null,
+          end: (entry.ends || l.end || null) as string | null,
+        };
+      });
     }
 
     // ========================================================================
     // GATEWAYS
     // ========================================================================
     case "pf_gateway_status": {
+      // Try relay cache first (Guardian v2 pushes this as hot data)
+      type GatewayCache = Array<{ name: string; status: string; latency_ms?: number | null; loss_percent?: number; monitor_ip?: string }>;
+      const cached = await queryRelayCache<GatewayCache>("pf_gateway_status");
+      if (cached && Array.isArray(cached.data)) {
+        return cached.data.map((g) => ({ ...g, _source: "relay_cache" }));
+      }
+
+      // Fall back to direct pfSense query
       const response = await client.getGatewayStatus();
       return (response.data || []).map((g) => ({
         name: g.name,
@@ -324,6 +926,14 @@ async function executeToolInner(
     // SERVICES
     // ========================================================================
     case "pf_services_list": {
+      // Try relay cache first (Guardian v2 pushes this as warm data)
+      type ServicesCache = Array<{ name: string; description: string; status: string; enabled: boolean }>;
+      const cached = await queryRelayCache<ServicesCache>("pf_services_list");
+      if (cached && Array.isArray(cached.data)) {
+        return cached.data.map((s) => ({ ...s, _source: "relay_cache" }));
+      }
+
+      // Fall back to direct pfSense query
       const response = await client.getServices();
       return (response.data || []).map((s) => ({
         name: s.name,
@@ -336,6 +946,21 @@ async function executeToolInner(
     case "pf_service_start": {
       const service = args.service as string;
       if (!service) throw new Error("service parameter required");
+
+      // Try queueing through relay for deferred execution
+      const queued = await queueRelayCommand("pf_service_start", { service });
+      if (queued && queued.success) {
+        return {
+          success: true,
+          action: "queued",
+          service,
+          command_id: queued.command_id,
+          message: "Command queued for Guardian execution. Service will start on next check-in.",
+          _source: "relay_queue",
+        };
+      }
+
+      // Fall back to direct pfSense API
       await client.startService(service);
       return { success: true, action: "started", service };
     }
@@ -343,6 +968,21 @@ async function executeToolInner(
     case "pf_service_stop": {
       const service = args.service as string;
       if (!service) throw new Error("service parameter required");
+
+      // Try queueing through relay for deferred execution
+      const queued = await queueRelayCommand("pf_service_stop", { service });
+      if (queued && queued.success) {
+        return {
+          success: true,
+          action: "queued",
+          service,
+          command_id: queued.command_id,
+          message: "Command queued for Guardian execution. Service will stop on next check-in.",
+          _source: "relay_queue",
+        };
+      }
+
+      // Fall back to direct pfSense API
       await client.stopService(service);
       return { success: true, action: "stopped", service };
     }
@@ -350,6 +990,21 @@ async function executeToolInner(
     case "pf_service_restart": {
       const service = args.service as string;
       if (!service) throw new Error("service parameter required");
+
+      // Try queueing through relay for deferred execution
+      const queued = await queueRelayCommand("pf_service_restart", { service });
+      if (queued && queued.success) {
+        return {
+          success: true,
+          action: "queued",
+          service,
+          command_id: queued.command_id,
+          message: "Command queued for Guardian execution. Service will restart on next check-in.",
+          _source: "relay_queue",
+        };
+      }
+
+      // Fall back to direct pfSense API
       await client.restartService(service);
       return { success: true, action: "restarted", service };
     }
@@ -370,14 +1025,34 @@ async function executeToolInner(
     }
 
     case "pf_diag_arp": {
+      // Try relay cache first (Guardian v2 pushes this as warm data)
+      type ArpCache = Array<{ ip: string; mac: string; interface: string; hostname?: string; type: string }>;
+      const cachedArp = await queryRelayCache<ArpCache>("pf_diag_arp");
+      if (cachedArp && Array.isArray(cachedArp.data)) {
+        return cachedArp.data.map((e) => ({
+          ip: e.ip,
+          mac: e.mac,
+          interface: e.interface,
+          hostname: e.hostname,
+          type: e.type,
+          _source: "relay_cache",
+        }));
+      }
+
+      // Fall back to direct pfSense query
+      // Note: pfSense API uses hyphenated field names (ip-address, mac-address)
       const response = await client.arpTable();
-      return (response.data || []).map((e) => ({
-        ip: e.ip,
-        mac: e.mac,
-        interface: e.interface,
-        hostname: e.hostname,
-        type: e.type,
-      }));
+      const arpData = response.data || [];
+      return arpData.map((e) => {
+        const entry = e as unknown as Record<string, unknown>;
+        return {
+          ip: (entry["ip-address"] || entry.ip || e.ip) as string,
+          mac: (entry["mac-address"] || entry.mac || e.mac) as string,
+          interface: e.interface,
+          hostname: e.hostname,
+          type: e.type,
+        };
+      });
     }
 
     // ========================================================================

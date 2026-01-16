@@ -155,4 +155,130 @@ router.get("/api/admin/rrd", requireAdminKey, (req: Request, res: Response) => {
   });
 });
 
+// =============================================================================
+// RRD TIME-SERIES POINTS (NEW - immutable historical data)
+// =============================================================================
+
+// GET /api/admin/points/:token/last - Get last timestamps for all metrics
+router.get("/api/admin/points/:token/last", requireAdminKey, (req: Request, res: Response) => {
+  const timestamps = db.getAllLastTimestamps(req.params.token);
+
+  res.json({
+    device_token: req.params.token,
+    last_timestamps: timestamps,
+  });
+});
+
+// GET /api/admin/points/:token/summary - Get summary of stored points
+router.get("/api/admin/points/:token/summary", requireAdminKey, (req: Request, res: Response) => {
+  const summary = db.getRrdPointsSummary(req.params.token);
+
+  res.json({
+    device_token: req.params.token,
+    metrics: summary.map((s) => ({
+      metric: s.metric,
+      count: s.count,
+      oldest: new Date(s.oldest).toISOString(),
+      newest: new Date(s.newest).toISOString(),
+      span_hours: Math.round((s.newest - s.oldest) / (1000 * 60 * 60)),
+    })),
+  });
+});
+
+// POST /api/admin/points - Push new points (incremental sync)
+router.post("/api/admin/points", requireAdminKey, (req: Request, res: Response) => {
+  const { device_token, metric, points } = req.body;
+
+  if (!device_token || !metric || !points) {
+    res.status(400).json({ error: "device_token, metric, and points required" });
+    return;
+  }
+
+  if (!Array.isArray(points)) {
+    res.status(400).json({ error: "points must be an array" });
+    return;
+  }
+
+  const inserted = db.storeRrdPoints(device_token, metric, points);
+
+  res.json({
+    success: true,
+    metric,
+    received: points.length,
+    inserted,  // New points (duplicates ignored)
+    stored_at: new Date().toISOString(),
+  });
+});
+
+// GET /api/admin/points/:token/:metric - Get points by time range or period
+router.get("/api/admin/points/:token/:metric", requireAdminKey, (req: Request, res: Response) => {
+  const { token, metric } = req.params;
+  const period = req.query.period as string | undefined;
+  const start = req.query.start as string | undefined;
+  const end = req.query.end as string | undefined;
+
+  let points;
+  if (period) {
+    // Period shorthand: 1h, 4h, 1d, 1w, 1m
+    points = db.getRrdPointsByPeriod(token, metric, period);
+  } else if (start) {
+    // Explicit time range
+    const startTs = parseInt(start);
+    const endTs = end ? parseInt(end) : Date.now();
+    points = db.getRrdPoints(token, metric, startTs, endTs);
+  } else {
+    // Default to last hour
+    points = db.getRrdPointsByPeriod(token, metric, "1h");
+  }
+
+  res.json({
+    device_token: token,
+    metric,
+    count: points.length,
+    points: points.map((p) => ({
+      timestamp: p.timestamp,
+      value: p.value,
+      time: new Date(p.timestamp).toISOString(),
+    })),
+  });
+});
+
+// =============================================================================
+// COMMAND QUEUE (for MCP to check for pending commands)
+// =============================================================================
+
+// POST /api/admin/checkin - MCP checks in for pending commands
+router.post("/api/admin/checkin", requireAdminKey, (req: Request, res: Response) => {
+  const { device_token, results } = req.body;
+
+  if (!device_token) {
+    res.status(400).json({ error: "device_token required" });
+    return;
+  }
+
+  // Process any command results from this request
+  if (results && Array.isArray(results)) {
+    for (const r of results) {
+      if (r.id && r.result !== undefined) {
+        db.markCommandExecuted(r.id, typeof r.result === 'string' ? r.result : JSON.stringify(r.result));
+        console.log(`[Admin/Checkin] Command ${r.id} executed: ${String(r.result).slice(0, 50)}...`);
+      }
+    }
+  }
+
+  // Get pending commands for this device
+  const commands = db.getPendingCommands(device_token);
+
+  // Update device last seen
+  db.updateDeviceLastSeen(device_token);
+
+  res.json({
+    commands: commands.map((c: any) => ({
+      id: c.id,
+      command: c.command,
+      source: c.source,
+    })),
+  });
+});
+
 export default router;

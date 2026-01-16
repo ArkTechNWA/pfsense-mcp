@@ -6,6 +6,13 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import type {
+  HotPushPayload,
+  WarmPushPayload,
+  ManifestConfig,
+  QueryStats,
+  DataCategory,
+} from "../types/cache";
 
 const DB_DIR = process.env.RELAY_DB_DIR || path.join(process.env.HOME || "/tmp", ".cache", "pfsense-relay");
 const DB_PATH = path.join(DB_DIR, "relay.db");
@@ -96,7 +103,7 @@ export function initDatabase(): void {
       FOREIGN KEY (device_token) REFERENCES devices(token)
     );
 
-    -- RRD historical data (pushed from MCP)
+    -- RRD historical data (LEGACY - blob per period, being phased out)
     CREATE TABLE IF NOT EXISTS rrd_data (
       id INTEGER PRIMARY KEY,
       device_token TEXT NOT NULL,
@@ -106,6 +113,19 @@ export function initDatabase(): void {
       created_at INTEGER NOT NULL,
       FOREIGN KEY (device_token) REFERENCES devices(token),
       UNIQUE(device_token, metric, period)
+    );
+
+    -- RRD time-series points (NEW - immutable historical data)
+    -- Each row is a single data point at a specific timestamp
+    -- Historical data never changes - only append new points
+    CREATE TABLE IF NOT EXISTS rrd_points (
+      id INTEGER PRIMARY KEY,
+      device_token TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      timestamp INTEGER NOT NULL,
+      value REAL NOT NULL,
+      FOREIGN KEY (device_token) REFERENCES devices(token),
+      UNIQUE(device_token, metric, timestamp)
     );
 
     -- Dashboard sessions (persistent across restarts)
@@ -127,11 +147,16 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_metrics_created ON metrics(created_at);
     CREATE INDEX IF NOT EXISTS idx_rrd_device ON rrd_data(device_token);
     CREATE INDEX IF NOT EXISTS idx_rrd_metric ON rrd_data(metric);
+    CREATE INDEX IF NOT EXISTS idx_rrd_points_lookup ON rrd_points(device_token, metric, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_rrd_points_time ON rrd_points(timestamp);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires ON dashboard_sessions(expires_at);
   `);
 
   // Run cleanup on startup
   cleanupExpired();
+
+  // Initialize Guardian v2 cache tables
+  initCacheTables();
 }
 
 /**
@@ -338,6 +363,12 @@ export function markCommandExecuted(commandId: number, result: string): void {
   `).run(result, Date.now(), commandId);
 }
 
+export function getCommandById(commandId: number): PendingCommand | null {
+  return db.prepare(`
+    SELECT * FROM pending_commands WHERE id = ?
+  `).get(commandId) as PendingCommand | null;
+}
+
 // =============================================================================
 // ALERT DEDUP
 // =============================================================================
@@ -513,6 +544,312 @@ export function getMetricsHistory(deviceToken: string, limit: number = 60): Arra
 setInterval(cleanupExpired, 60 * 60 * 1000);
 
 // =============================================================================
+// GUARDIAN V2 CACHE OPERATIONS
+// =============================================================================
+
+// Default manifest for new devices
+const DEFAULT_MANIFEST: ManifestConfig = {
+  version: "1.0.0",
+  updated_at: Date.now(),
+  hot: {
+    interval_seconds: 30,
+    collect: ["system", "gateways", "interfaces"],
+  },
+  warm: {
+    interval_seconds: 300,
+    collect: ["services", "dhcp_leases", "arp_table"],
+  },
+  cold: {
+    note: "Pulled on demand by relay",
+    items: ["firewall_rules", "firewall_states", "rrd"],
+  },
+  thresholds: {
+    cpu: 80,
+    memory: 85,
+    disk: 90,
+  },
+};
+
+/**
+ * Initialize Guardian v2 cache tables
+ */
+export function initCacheTables(): void {
+  db.exec(`
+    -- Guardian v2: Hot/Warm data cache
+    CREATE TABLE IF NOT EXISTS device_cache (
+      id INTEGER PRIMARY KEY,
+      device_token TEXT NOT NULL,
+      cache_type TEXT NOT NULL,
+      data_json TEXT NOT NULL,
+      cached_at INTEGER NOT NULL,
+      ttl_ms INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      UNIQUE(device_token, cache_type)
+    );
+
+    -- Guardian v2: Per-device manifest config
+    CREATE TABLE IF NOT EXISTS device_manifests (
+      id INTEGER PRIMARY KEY,
+      device_token TEXT UNIQUE NOT NULL,
+      manifest_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      guardian_version TEXT
+    );
+
+    -- Guardian v2: A.L.A.N. query statistics
+    CREATE TABLE IF NOT EXISTS query_stats (
+      id INTEGER PRIMARY KEY,
+      tool TEXT NOT NULL,
+      device_token TEXT,
+      queried_at INTEGER NOT NULL,
+      latency_ms INTEGER,
+      source TEXT
+    );
+
+    -- Guardian v2: A.L.A.N. promotion decisions
+    CREATE TABLE IF NOT EXISTS promotion_history (
+      id INTEGER PRIMARY KEY,
+      tool TEXT NOT NULL,
+      from_category TEXT,
+      to_category TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      decided_at INTEGER NOT NULL
+    );
+
+    -- Indexes for cache tables
+    CREATE INDEX IF NOT EXISTS idx_cache_device ON device_cache(device_token);
+    CREATE INDEX IF NOT EXISTS idx_cache_type ON device_cache(cache_type);
+    CREATE INDEX IF NOT EXISTS idx_query_stats_tool ON query_stats(tool);
+    CREATE INDEX IF NOT EXISTS idx_query_stats_time ON query_stats(queried_at);
+  `);
+
+  console.log("[DB] Guardian v2 cache tables initialized");
+}
+
+/**
+ * Store hot data from Guardian push
+ */
+export function storeHotCache(deviceToken: string, data: HotPushPayload, ttlMs: number = 60000): void {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO device_cache (device_token, cache_type, data_json, cached_at, ttl_ms, source)
+    VALUES (?, 'hot', ?, ?, ?, 'guardian_push')
+    ON CONFLICT(device_token, cache_type) DO UPDATE SET
+      data_json = excluded.data_json,
+      cached_at = excluded.cached_at,
+      ttl_ms = excluded.ttl_ms,
+      source = excluded.source
+  `).run(deviceToken, JSON.stringify(data), now, ttlMs);
+}
+
+/**
+ * Store warm data from Guardian push
+ */
+export function storeWarmCache(deviceToken: string, data: WarmPushPayload, ttlMs: number = 600000): void {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO device_cache (device_token, cache_type, data_json, cached_at, ttl_ms, source)
+    VALUES (?, 'warm', ?, ?, ?, 'guardian_push')
+    ON CONFLICT(device_token, cache_type) DO UPDATE SET
+      data_json = excluded.data_json,
+      cached_at = excluded.cached_at,
+      ttl_ms = excluded.ttl_ms,
+      source = excluded.source
+  `).run(deviceToken, JSON.stringify(data), now, ttlMs);
+}
+
+/**
+ * Get cached data if not expired
+ */
+export function getCachedData(
+  deviceToken: string,
+  cacheType: "hot" | "warm"
+): { data: HotPushPayload | WarmPushPayload; cached_at: number; ttl_remaining_ms: number; source: string } | null {
+  const row = db.prepare(`
+    SELECT data_json, cached_at, ttl_ms, source
+    FROM device_cache
+    WHERE device_token = ? AND cache_type = ?
+  `).get(deviceToken, cacheType) as { data_json: string; cached_at: number; ttl_ms: number; source: string } | undefined;
+
+  if (!row) return null;
+
+  const now = Date.now();
+  const ttlRemaining = row.cached_at + row.ttl_ms - now;
+
+  // Return null if expired
+  if (ttlRemaining <= 0) return null;
+
+  return {
+    data: JSON.parse(row.data_json),
+    cached_at: row.cached_at,
+    ttl_remaining_ms: ttlRemaining,
+    source: row.source,
+  };
+}
+
+/**
+ * Get device manifest (or default)
+ */
+export function getDeviceManifest(deviceToken: string): ManifestConfig {
+  const row = db.prepare(`
+    SELECT manifest_json FROM device_manifests WHERE device_token = ?
+  `).get(deviceToken) as { manifest_json: string } | undefined;
+
+  if (!row) return { ...DEFAULT_MANIFEST, updated_at: Date.now() };
+  return JSON.parse(row.manifest_json);
+}
+
+/**
+ * Update device manifest
+ */
+export function updateDeviceManifest(deviceToken: string, manifest: ManifestConfig, guardianVersion?: string): void {
+  const now = Date.now();
+  manifest.updated_at = now;
+
+  db.prepare(`
+    INSERT INTO device_manifests (device_token, manifest_json, updated_at, guardian_version)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(device_token) DO UPDATE SET
+      manifest_json = excluded.manifest_json,
+      updated_at = excluded.updated_at,
+      guardian_version = COALESCE(excluded.guardian_version, device_manifests.guardian_version)
+  `).run(deviceToken, JSON.stringify(manifest), now, guardianVersion || null);
+}
+
+/**
+ * Record a query for A.L.A.N. stats
+ */
+export function recordQuery(tool: string, deviceToken: string | null, latencyMs: number, source: string): void {
+  db.prepare(`
+    INSERT INTO query_stats (tool, device_token, queried_at, latency_ms, source)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(tool, deviceToken, Date.now(), latencyMs, source);
+
+  // Cleanup old stats (keep 7 days)
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  db.prepare("DELETE FROM query_stats WHERE queried_at < ?").run(cutoff);
+}
+
+/**
+ * Get query stats for A.L.A.N. analysis
+ */
+export function getQueryStats(): QueryStats[] {
+  const now = Date.now();
+  const oneDayAgo = now - 24 * 60 * 60 * 1000;
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+
+  const rows = db.prepare(`
+    SELECT
+      tool,
+      COUNT(CASE WHEN queried_at >= ? THEN 1 END) as count_24h,
+      COUNT(*) as count_7d,
+      AVG(latency_ms) as avg_latency_ms,
+      MAX(queried_at) as last_queried_at,
+      GROUP_CONCAT(DISTINCT source) as sources
+    FROM query_stats
+    WHERE queried_at >= ?
+    GROUP BY tool
+    ORDER BY count_7d DESC
+  `).all(oneDayAgo, sevenDaysAgo) as Array<{
+    tool: string;
+    count_24h: number;
+    count_7d: number;
+    avg_latency_ms: number;
+    last_queried_at: number;
+    sources: string;
+  }>;
+
+  return rows.map((row) => ({
+    tool: row.tool,
+    count_24h: row.count_24h || 0,
+    count_7d: row.count_7d || 0,
+    avg_latency_ms: Math.round(row.avg_latency_ms || 0),
+    last_queried_at: row.last_queried_at,
+    sources: row.sources ? row.sources.split(",") : [],
+  }));
+}
+
+/**
+ * Record a promotion decision
+ */
+export function recordPromotion(
+  tool: string,
+  fromCategory: DataCategory | null,
+  toCategory: DataCategory,
+  reason: string,
+  confidence: number
+): void {
+  db.prepare(`
+    INSERT INTO promotion_history (tool, from_category, to_category, reason, confidence, decided_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(tool, fromCategory, toCategory, reason, confidence, Date.now());
+}
+
+/**
+ * Get recent promotion decisions
+ */
+export function getRecentPromotions(limit: number = 20): Array<{
+  tool: string;
+  from_category: string | null;
+  to_category: string;
+  reason: string;
+  confidence: number;
+  decided_at: number;
+}> {
+  return db.prepare(`
+    SELECT * FROM promotion_history
+    ORDER BY decided_at DESC
+    LIMIT ?
+  `).all(limit) as Array<{
+    tool: string;
+    from_category: string | null;
+    to_category: string;
+    reason: string;
+    confidence: number;
+    decided_at: number;
+  }>;
+}
+
+/**
+ * Get cache stats for health endpoint
+ */
+export function getCacheStats(): {
+  hot_devices: number;
+  warm_devices: number;
+  total_queries_24h: number;
+  manifests: number;
+} {
+  const now = Date.now();
+  const oneDayAgo = now - 24 * 60 * 60 * 1000;
+
+  const hotCount = (db.prepare(`
+    SELECT COUNT(DISTINCT device_token) as c FROM device_cache
+    WHERE cache_type = 'hot' AND cached_at + ttl_ms > ?
+  `).get(now) as any).c;
+
+  const warmCount = (db.prepare(`
+    SELECT COUNT(DISTINCT device_token) as c FROM device_cache
+    WHERE cache_type = 'warm' AND cached_at + ttl_ms > ?
+  `).get(now) as any).c;
+
+  const queryCount = (db.prepare(`
+    SELECT COUNT(*) as c FROM query_stats WHERE queried_at >= ?
+  `).get(oneDayAgo) as any).c;
+
+  const manifestCount = (db.prepare(`
+    SELECT COUNT(*) as c FROM device_manifests
+  `).get() as any).c;
+
+  return {
+    hot_devices: hotCount,
+    warm_devices: warmCount,
+    total_queries_24h: queryCount,
+    manifests: manifestCount,
+  };
+}
+
+// =============================================================================
 // RRD HISTORICAL DATA
 // =============================================================================
 
@@ -570,6 +907,143 @@ export function getAllRrdSummary(): Array<{ device_token: string; metrics: strin
     metrics: row.metrics ? row.metrics.split(",") : [],
     updated_at: new Date(row.updated_at).toISOString(),
   }));
+}
+
+// =============================================================================
+// RRD TIME-SERIES POINTS (NEW - immutable historical data)
+// =============================================================================
+
+export interface RrdPoint {
+  id: number;
+  device_token: string;
+  metric: string;
+  timestamp: number;
+  value: number;
+}
+
+/**
+ * Get the last timestamp we have for a metric (for incremental sync)
+ */
+export function getLastTimestamp(deviceToken: string, metric: string): number | null {
+  const row = db.prepare(`
+    SELECT MAX(timestamp) as last_ts
+    FROM rrd_points
+    WHERE device_token = ? AND metric = ?
+  `).get(deviceToken, metric) as { last_ts: number | null } | undefined;
+
+  return row?.last_ts || null;
+}
+
+/**
+ * Get last timestamps for all metrics (batch query for efficiency)
+ */
+export function getAllLastTimestamps(deviceToken: string): Record<string, number> {
+  const rows = db.prepare(`
+    SELECT metric, MAX(timestamp) as last_ts
+    FROM rrd_points
+    WHERE device_token = ?
+    GROUP BY metric
+  `).all(deviceToken) as Array<{ metric: string; last_ts: number }>;
+
+  const result: Record<string, number> = {};
+  for (const row of rows) {
+    result[row.metric] = row.last_ts;
+  }
+  return result;
+}
+
+/**
+ * Store new RRD points (batch insert, skip duplicates)
+ * Returns number of new points inserted
+ */
+export function storeRrdPoints(
+  deviceToken: string,
+  metric: string,
+  points: Array<{ timestamp: number; value: number }>
+): number {
+  if (points.length === 0) return 0;
+
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO rrd_points (device_token, metric, timestamp, value)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  let inserted = 0;
+  const insertMany = db.transaction((pts: Array<{ timestamp: number; value: number }>) => {
+    for (const pt of pts) {
+      const result = stmt.run(deviceToken, metric, pt.timestamp, pt.value);
+      inserted += result.changes;
+    }
+  });
+
+  insertMany(points);
+  return inserted;
+}
+
+/**
+ * Get RRD points for a metric within a time range
+ */
+export function getRrdPoints(
+  deviceToken: string,
+  metric: string,
+  startTime: number,
+  endTime?: number
+): RrdPoint[] {
+  if (endTime) {
+    return db.prepare(`
+      SELECT * FROM rrd_points
+      WHERE device_token = ? AND metric = ? AND timestamp >= ? AND timestamp <= ?
+      ORDER BY timestamp ASC
+    `).all(deviceToken, metric, startTime, endTime) as RrdPoint[];
+  }
+
+  return db.prepare(`
+    SELECT * FROM rrd_points
+    WHERE device_token = ? AND metric = ? AND timestamp >= ?
+    ORDER BY timestamp ASC
+  `).all(deviceToken, metric, startTime) as RrdPoint[];
+}
+
+/**
+ * Get RRD points for dashboard (by period shorthand)
+ */
+export function getRrdPointsByPeriod(
+  deviceToken: string,
+  metric: string,
+  period: string
+): RrdPoint[] {
+  const now = Date.now();
+  const periodMs: Record<string, number> = {
+    "1h": 60 * 60 * 1000,
+    "4h": 4 * 60 * 60 * 1000,
+    "1d": 24 * 60 * 60 * 1000,
+    "1w": 7 * 24 * 60 * 60 * 1000,
+    "1m": 30 * 24 * 60 * 60 * 1000,
+  };
+
+  const startTime = now - (periodMs[period] || periodMs["1h"]);
+  return getRrdPoints(deviceToken, metric, startTime, now);
+}
+
+/**
+ * Get summary of stored points per metric
+ */
+export function getRrdPointsSummary(deviceToken: string): Array<{
+  metric: string;
+  count: number;
+  oldest: number;
+  newest: number;
+}> {
+  return db.prepare(`
+    SELECT
+      metric,
+      COUNT(*) as count,
+      MIN(timestamp) as oldest,
+      MAX(timestamp) as newest
+    FROM rrd_points
+    WHERE device_token = ?
+    GROUP BY metric
+  `).all(deviceToken) as Array<{ metric: string; count: number; oldest: number; newest: number }>;
 }
 
 // =============================================================================

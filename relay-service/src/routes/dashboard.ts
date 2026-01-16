@@ -261,10 +261,11 @@ router.get("/api/dashboard/rrd/:metric", requireAuthAPI, (req: AuthRequest, res:
   const device = devices[0];
   const metric = req.params.metric;
   const period = (req.query.period as string) || "1h";
-  const rrdData = db.getRrdData(device.token, metric);
 
-  const periodData = rrdData.find((r: any) => r.period === period);
-  if (!periodData) {
+  // Use new time-series points storage (incremental sync)
+  const points = db.getRrdPointsByPeriod(device.token, metric, period);
+
+  if (points.length === 0) {
     return res.status(404).json({ error: "No data for this period" });
   }
 
@@ -272,8 +273,13 @@ router.get("/api/dashboard/rrd/:metric", requireAuthAPI, (req: AuthRequest, res:
     device: device.name || device.token.slice(0, 8),
     metric,
     period,
-    data: JSON.parse(periodData.data_json),
-    updated_at: new Date(periodData.created_at).toISOString(),
+    // Return just the values array for backward compatibility with charts
+    data: points.map((p: any) => p.value),
+    // Also include timestamps for richer display
+    points: points.map((p: any) => ({ t: p.timestamp, v: p.value })),
+    count: points.length,
+    oldest: new Date(points[0].timestamp).toISOString(),
+    newest: new Date(points[points.length - 1].timestamp).toISOString(),
   });
 });
 
@@ -285,17 +291,20 @@ router.get("/api/dashboard/rrd", requireAuthAPI, (req: AuthRequest, res: Respons
   }
 
   const device = devices[0];
-  const allRrd = db.getRrdData(device.token);
 
-  const metrics: Record<string, string[]> = {};
-  allRrd.forEach((r: any) => {
-    if (!metrics[r.metric]) metrics[r.metric] = [];
-    metrics[r.metric].push(r.period);
-  });
+  // Use new time-series points storage
+  const summary = db.getRrdPointsSummary(device.token);
 
   res.json({
     device: device.name || device.token.slice(0, 8),
-    available_metrics: Object.entries(metrics).map(([metric, periods]) => ({ metric, periods })),
+    available_metrics: summary.map((s: any) => ({
+      metric: s.metric,
+      count: s.count,
+      oldest: new Date(s.oldest).toISOString(),
+      newest: new Date(s.newest).toISOString(),
+      // All periods are now available since we have continuous time-series
+      periods: ["1h", "4h", "1d", "1w", "1m"],
+    })),
   });
 });
 
@@ -684,12 +693,14 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
     .traffic-label { font-size: 0.85em; color: var(--text-secondary); }
     .traffic-value { font-size: 0.85em; font-weight: 600; color: var(--cyan); }
     .traffic-chart {
-      height: 48px;
+      width: 100%;
+      height: 50px;
       margin-top: 8px;
     }
     .traffic-chart svg {
       width: 100%;
       height: 100%;
+      display: block;
     }
 
     /* Gateway stats */
@@ -850,7 +861,28 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       color: var(--text-secondary);
       margin-bottom: 8px;
     }
+    /* uPlot overrides for dark theme */
+    .uplot { font-family: inherit; }
+    .uplot .u-legend { display: none; }
+    .uplot .u-axis { stroke: var(--border) !important; }
+    .uplot .u-axis text { fill: var(--text-muted) !important; font-size: 10px; }
+    .u-tooltip {
+      position: absolute;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--text-primary);
+      pointer-events: none;
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .u-tooltip .u-date { color: var(--text-muted); font-size: 10px; margin-bottom: 4px; }
+    .u-tooltip .u-value { font-weight: 600; font-size: 14px; }
   </style>
+  <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.28/dist/uPlot.min.css">
+  <script src="https://unpkg.com/uplot@1.6.28/dist/uPlot.iife.min.js"></script>
 </head>
 <body>
   <div class="dashboard">
@@ -944,7 +976,7 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
                 <span class="bar-value">--%</span>
               </div>
               <div class="bar-track"><div class="bar-fill good" style="width:0%"></div></div>
-              <div class="bar-chart"></div>
+              <div class="bar-chart" id="cpuChart"></div>
             </div>
             <div class="resource-bar" id="memoryBar">
               <div class="bar-header">
@@ -952,15 +984,15 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
                 <span class="bar-value">--%</span>
               </div>
               <div class="bar-track"><div class="bar-fill good" style="width:0%"></div></div>
-              <div class="bar-chart"></div>
+              <div class="bar-chart" id="memoryChart"></div>
             </div>
-            <div class="resource-bar" id="diskBar">
+            <div class="resource-bar" id="statesBar">
               <div class="bar-header">
-                <span class="bar-label">Disk</span>
-                <span class="bar-value">--%</span>
+                <span class="bar-label">States</span>
+                <span class="bar-value">--</span>
               </div>
               <div class="bar-track"><div class="bar-fill good" style="width:0%"></div></div>
-              <div class="bar-chart"></div>
+              <div class="bar-chart" id="statesChart"></div>
             </div>
           </div>
 
@@ -1055,6 +1087,149 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       return pct > 80 ? 'bad' : pct > 50 ? 'warn' : 'good';
     }
 
+    // Store uPlot instances for cleanup
+    const chartInstances = {};
+
+    // Time-series chart with uPlot (tooltips + x-axis time labels)
+    function renderTimeSeriesChart(container, points, color, label, unit = '%', useGradient = false) {
+      if (!points || points.length < 2) {
+        container.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:8px">No data</div>';
+        return;
+      }
+
+      // Clean up existing chart
+      const chartId = container.id;
+      if (chartInstances[chartId]) {
+        chartInstances[chartId].destroy();
+        delete chartInstances[chartId];
+      }
+      container.innerHTML = '';
+
+      // Prepare data: [timestamps[], values[]]
+      const timestamps = points.map(p => Math.floor(p.t / 1000)); // uPlot uses seconds
+      const values = points.map(p => p.v);
+
+      // Determine time format based on span
+      const span = (timestamps[timestamps.length - 1] - timestamps[0]);
+      const isLongSpan = span > 86400; // > 1 day
+
+      // For gradient fill, we need a custom draw function
+      const gradientFill = useGradient ? (u, seriesIdx) => {
+        const ctx = u.ctx;
+        const plotTop = u.bbox.top;
+        const plotHeight = u.bbox.height;
+
+        // Create vertical gradient: green (bottom) -> yellow (middle) -> red (top)
+        const gradient = ctx.createLinearGradient(0, plotTop + plotHeight, 0, plotTop);
+        gradient.addColorStop(0, 'rgba(0, 255, 100, 0.4)');    // Green at bottom (low values)
+        gradient.addColorStop(0.5, 'rgba(255, 200, 0, 0.4)');  // Yellow in middle
+        gradient.addColorStop(1, 'rgba(255, 50, 50, 0.5)');    // Red at top (high values)
+        return gradient;
+      } : color + '40';
+
+      // Stroke also varies for gradient mode
+      const gradientStroke = useGradient ? (u, seriesIdx) => {
+        const ctx = u.ctx;
+        const plotTop = u.bbox.top;
+        const plotHeight = u.bbox.height;
+
+        const gradient = ctx.createLinearGradient(0, plotTop + plotHeight, 0, plotTop);
+        gradient.addColorStop(0, '#00ff88');    // Green
+        gradient.addColorStop(0.5, '#ffcc00');  // Yellow
+        gradient.addColorStop(1, '#ff4444');    // Red
+        return gradient;
+      } : color;
+
+      const opts = {
+        width: container.offsetWidth || 380,
+        height: 50,
+        cursor: { show: true, x: true, y: false },
+        legend: { show: false },
+        // For gradient mode, fix Y scale to 0-100 so colors map to actual percentages
+        scales: {
+          x: { time: true },
+          y: useGradient ? { min: 0, max: 100 } : { auto: true }
+        },
+        axes: [
+          {
+            stroke: 'var(--border)',
+            grid: { show: false },
+            ticks: { show: false },
+            values: (u, vals) => vals.map(v => {
+              const d = new Date(v * 1000);
+              return isLongSpan
+                ? (d.getMonth()+1) + '/' + d.getDate()
+                : d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+            }),
+            size: 20,
+            font: '10px system-ui',
+          },
+          {
+            show: false, // Hide y-axis
+            size: 0,
+          }
+        ],
+        series: [
+          {},
+          {
+            stroke: gradientStroke,
+            fill: gradientFill,
+            width: 1.5,
+            points: { show: false },
+          }
+        ],
+        hooks: {
+          setCursor: [
+            (u) => {
+              const idx = u.cursor.idx;
+              if (idx == null) {
+                removeTooltip();
+                return;
+              }
+              const ts = u.data[0][idx];
+              const val = u.data[1][idx];
+              if (ts && val != null) {
+                const d = new Date(ts * 1000);
+                const dateStr = (d.getMonth()+1) + '/' + d.getDate() + '/' + String(d.getFullYear()).slice(2) +
+                  ' ' + d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+                showTooltip(u, idx, dateStr, val.toFixed(1) + unit, color, label);
+              }
+            }
+          ],
+          ready: [
+            (u) => {
+              u.root.addEventListener('mouseleave', removeTooltip);
+            }
+          ]
+        }
+      };
+
+      const uplot = new uPlot(opts, [timestamps, values], container);
+      chartInstances[chartId] = uplot;
+    }
+
+    // Tooltip helpers
+    let tooltipEl = null;
+    function showTooltip(u, idx, dateStr, valStr, color, label) {
+      if (!tooltipEl) {
+        tooltipEl = document.createElement('div');
+        tooltipEl.className = 'u-tooltip';
+        document.body.appendChild(tooltipEl);
+      }
+      tooltipEl.innerHTML = '<div class="u-date">' + dateStr + '</div>' +
+        '<div class="u-value" style="color:' + color + '">' + label + ': ' + valStr + '</div>';
+
+      const left = u.cursor.left + u.root.getBoundingClientRect().left;
+      const top = u.root.getBoundingClientRect().top - 50;
+      tooltipEl.style.left = left + 'px';
+      tooltipEl.style.top = top + 'px';
+      tooltipEl.style.display = 'block';
+    }
+    function removeTooltip() {
+      if (tooltipEl) tooltipEl.style.display = 'none';
+    }
+
+    // Legacy SVG chart (fallback for simple cases)
     function renderAreaChart(data, color1, color2, height = 40) {
       if (!data || data.length < 2) return '';
       const w = 400, h = height, pad = 2;
@@ -1089,6 +1264,23 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
         if (type === 'disk') return sys.disk?.usage_percent || 0;
         return 0;
       }).slice(-30);
+    }
+
+    function extractTrafficHistory(history, iface) {
+      if (!history || history.length < 2) return [];
+      const rates = [];
+      // History is newest-first, so i=0 is newest
+      for (let i = 0; i < history.length - 1; i++) {
+        const curr = history[i]?.metrics?.interfaces?.[iface] || {};
+        const prev = history[i + 1]?.metrics?.interfaces?.[iface] || {};
+        const timeDiff = (history[i].created_at - history[i + 1].created_at) / 1000 || 60;
+        const bytesIn = (curr.inbytes || 0) - (prev.inbytes || 0);
+        const bytesOut = (curr.outbytes || 0) - (prev.outbytes || 0);
+        // Calculate Mbps, clamp to 0 if negative (counter reset)
+        const mbps = Math.max(0, (bytesIn + bytesOut) * 8 / timeDiff / 1e6);
+        rates.push(mbps);
+      }
+      return rates.reverse(); // Return oldest-first for charting
     }
 
     // ========================================
@@ -1198,6 +1390,8 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       // Calculate traffic rate from history if available
       const wanEl = document.getElementById('wanTraffic');
       const lanEl = document.getElementById('lanTraffic');
+      const wanChartEl = document.getElementById('wanChart');
+      const lanChartEl = document.getElementById('lanChart');
 
       if (history && history.length >= 2) {
         const newest = history[0]?.metrics?.interfaces || {};
@@ -1213,12 +1407,20 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
         const lanBytesOut = (newest.lan?.outbytes || 0) - (older.lan?.outbytes || 0);
         const lanMbps = ((lanBytesIn + lanBytesOut) * 8 / timeDiff / 1e6).toFixed(1);
         lanEl.textContent = lanMbps + ' Mbps';
+
+        // Render traffic charts
+        const wanHistory = extractTrafficHistory(history, 'wan');
+        const lanHistory = extractTrafficHistory(history, 'lan');
+        wanChartEl.innerHTML = renderAreaChart(wanHistory, '#00d9ff', '#0088ff', 50);
+        lanChartEl.innerHTML = renderAreaChart(lanHistory, '#00ff88', '#00d9ff', 50);
       } else {
         // Fallback: show total throughput
         const wanTotal = formatBytes((ifaces.wan?.inbytes || 0) + (ifaces.wan?.outbytes || 0));
         const lanTotal = formatBytes((ifaces.lan?.inbytes || 0) + (ifaces.lan?.outbytes || 0));
         wanEl.textContent = wanTotal;
         lanEl.textContent = lanTotal;
+        wanChartEl.innerHTML = '';
+        lanChartEl.innerHTML = '';
       }
     }
 
@@ -1305,6 +1507,59 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
       }
     }
 
+    // Fetch RRD data for selected period and update all charts
+    async function updateChartsForPeriod(period) {
+      console.log('[Charts] Updating for period:', period);
+
+      // Fetch traffic RRD data (includes points with timestamps)
+      const [wanRrd, lanRrd, cpuRrd, memRrd, statesRrd] = await Promise.all([
+        fetchRrd('traffic_wan', period),
+        fetchRrd('traffic_lan', period),
+        fetchRrd('cpu', period),
+        fetchRrd('memory', period),
+        fetchRrd('states', period)
+      ]);
+
+      // Update traffic charts with uPlot (interactive, tooltips)
+      const wanChartEl = document.getElementById('wanChart');
+      const lanChartEl = document.getElementById('lanChart');
+
+      if (wanRrd?.points && wanRrd.points.length > 0 && wanChartEl) {
+        renderTimeSeriesChart(wanChartEl, wanRrd.points, '#00d9ff', 'WAN', ' B/s');
+      }
+      if (lanRrd?.points && lanRrd.points.length > 0 && lanChartEl) {
+        renderTimeSeriesChart(lanChartEl, lanRrd.points, '#00ff88', 'LAN', ' B/s');
+      }
+
+      // Update CPU chart (gradient: green=low, yellow=mid, red=high)
+      const cpuChartEl = document.getElementById('cpuChart');
+      if (cpuRrd?.points && cpuRrd.points.length > 0 && cpuChartEl) {
+        renderTimeSeriesChart(cpuChartEl, cpuRrd.points, '#00d9ff', 'CPU', '%', true);
+      }
+
+      // Update memory chart (gradient: green=low, yellow=mid, red=high)
+      const memChartEl = document.getElementById('memoryChart');
+      if (memRrd?.points && memRrd.points.length > 0 && memChartEl) {
+        renderTimeSeriesChart(memChartEl, memRrd.points, '#00ff88', 'Memory', '%', true);
+      }
+
+      // Update states chart (purple - distinct from percentage metrics)
+      const statesChartEl = document.getElementById('statesChart');
+      if (statesRrd?.points && statesRrd.points.length > 0 && statesChartEl) {
+        renderTimeSeriesChart(statesChartEl, statesRrd.points, '#a855f7', 'States', '');
+      }
+
+      console.log('[Charts] Updated with RRD data:', {
+        wan: wanRrd?.points?.length || 0,
+        lan: lanRrd?.points?.length || 0,
+        cpu: cpuRrd?.points?.length || 0,
+        mem: memRrd?.points?.length || 0,
+        states: statesRrd?.points?.length || 0
+      });
+    }
+
+    // NOTE: queueRrdFetch and pollForRrdData removed - incremental sync handles this automatically
+
     async function executeAction(action) {
       const btn = document.querySelector('[data-action="' + action + '"]');
       if (!btn) return;
@@ -1375,14 +1630,16 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
         document.getElementById('sidebar').classList.remove('open');
       });
 
-      // Period selector
+      // Period selector - data always available via incremental sync
       document.querySelectorAll('.period-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
           document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
           e.target.classList.add('active');
           State.selectedPeriod = e.target.dataset.period;
           State.rrdCache = {}; // Clear cache on period change
-          fetchStatus();
+
+          // Update charts directly - data is always synced
+          await updateChartsForPeriod(State.selectedPeriod);
         });
       });
 
@@ -1423,6 +1680,7 @@ router.get("/dashboard", requireAuth, (req: AuthRequest, res: Response) => {
     // ========================================
     initEventHandlers();
     fetchStatus();
+    updateChartsForPeriod(State.selectedPeriod); // Load charts on page init
     setInterval(tick, 1000);
   </script>
 </body>
