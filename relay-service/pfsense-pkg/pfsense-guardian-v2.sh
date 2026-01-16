@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/local/bin/bash
 #
 # pfSense Guardian v2 - Manifest-Driven Data Push
 #
@@ -58,7 +58,7 @@ generate_token() {
 sign_payload() {
     local payload="$1"
     local timestamp="$2"
-    echo -n "${payload}${timestamp}" | openssl dgst -sha256 -hmac "$DEVICE_TOKEN" | awk '{print $2}'
+    echo -n "${timestamp}.${payload}" | openssl dgst -sha256 -hmac "$DEVICE_TOKEN" | awk '{print $2}'
 }
 
 # Log message
@@ -84,7 +84,7 @@ collect_system() {
     local cpu_count=$(sysctl -n hw.ncpu 2>/dev/null || echo "1")
     local cpu_usage=$(top -b -n 1 2>/dev/null | grep "CPU:" | awk '{print int($2)}' || echo "0")
     local load_avg=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2","$3","$4}' || echo "0,0,0")
-    local cpu_temp=$(sysctl -n dev.cpu.0.temperature 2>/dev/null | tr -d 'C' || echo "null")
+    local cpu_temp=$(sysctl -n dev.cpu.0.temperature 2>/dev/null | tr -d "C"); [ -z "$cpu_temp" ] && cpu_temp="null"
 
     # Memory info
     local page_size=$(sysctl -n hw.pagesize 2>/dev/null || echo "4096")
@@ -135,7 +135,7 @@ collect_gateways() {
     local first=true
 
     # Try to get gateway status from dpinger
-    for gw_file in /var/db/rrd/*-quality.rrd 2>/dev/null; do
+    for gw_file in /var/db/rrd/*-quality.rrd; do
         if [ -f "$gw_file" ]; then
             local gw_name=$(basename "$gw_file" | sed 's/-quality.rrd//')
             local status="online"
@@ -178,31 +178,42 @@ collect_gateways() {
 }
 
 # Collect interface data (hot data)
+# Collect interface data (hot data)
 collect_interfaces() {
     local json="{"
     local first=true
 
-    for iface in $(ifconfig -l | tr ' ' '\n' | grep -v "lo0\|pflog\|pfsync\|enc\|gif\|gre"); do
+    for iface in $(ifconfig -l | tr " " "\n" | grep -v "lo0\|pflog\|pfsync\|enc\|gif\|gre"); do
         local info=$(ifconfig "$iface" 2>/dev/null)
         if [ -z "$info" ]; then continue; fi
 
         local friendly_name="$iface"
         local status="down"
-        echo "$info" | grep -q "status: active\|UP" && status="up"
+        echo "$info" | grep -q "status: active" && status="up"
+        echo "$info" | grep -q "<UP," && status="up"
 
-        local ip_addr=$(echo "$info" | grep "inet " | head -1 | awk '{print $2}' || echo "null")
+        local ip_addr=$(echo "$info" | grep "inet " | head -1 | awk "{print \$2}")
         [ -z "$ip_addr" ] && ip_addr="null" || ip_addr="\"$ip_addr\""
 
-        local mac_addr=$(echo "$info" | grep "ether " | awk '{print $2}' || echo "00:00:00:00:00:00")
+        local mac_addr=$(echo "$info" | grep "ether " | awk "{print \$2}")
+        [ -z "$mac_addr" ] && mac_addr="00:00:00:00:00:00"
 
-        # Traffic stats from netstat
-        local stats=$(netstat -ibnd -I "$iface" 2>/dev/null | tail -1)
-        local in_bytes=$(echo "$stats" | awk '{print $7}' || echo "0")
-        local out_bytes=$(echo "$stats" | awk '{print $10}' || echo "0")
-        local in_packets=$(echo "$stats" | awk '{print $5}' || echo "0")
-        local out_packets=$(echo "$stats" | awk '{print $8}' || echo "0")
-        local in_errors=$(echo "$stats" | awk '{print $6}' || echo "0")
-        local out_errors=$(echo "$stats" | awk '{print $9}' || echo "0")
+        # Get stats from Link line (has totals)
+        local stats=$(netstat -ib -I "$iface" 2>/dev/null | grep "Link#")
+        local in_bytes=$(echo "$stats" | awk "{print \$8}" | grep -E "^[0-9]+$")
+        local out_bytes=$(echo "$stats" | awk "{print \$11}" | grep -E "^[0-9]+$")
+        local in_packets=$(echo "$stats" | awk "{print \$5}" | grep -E "^[0-9]+$")
+        local out_packets=$(echo "$stats" | awk "{print \$9}" | grep -E "^[0-9]+$")
+        local in_errors=$(echo "$stats" | awk "{print \$6}" | grep -E "^[0-9]+$")
+        local out_errors=$(echo "$stats" | awk "{print \$10}" | grep -E "^[0-9]+$")
+
+        # Default to 0 if not numeric
+        : ${in_bytes:=0}
+        : ${out_bytes:=0}
+        : ${in_packets:=0}
+        : ${out_packets:=0}
+        : ${in_errors:=0}
+        : ${out_errors:=0}
 
         # Speed detection
         local speed="null"
@@ -218,13 +229,12 @@ collect_interfaces() {
             json="${json},"
         fi
 
-        json="${json}\"$iface\":{\"name\":\"$iface\",\"friendly_name\":\"$friendly_name\",\"status\":\"$status\",\"ip_address\":$ip_addr,\"mac_address\":\"$mac_addr\",\"in_bytes\":${in_bytes:-0},\"out_bytes\":${out_bytes:-0},\"in_packets\":${in_packets:-0},\"out_packets\":${out_packets:-0},\"in_errors\":${in_errors:-0},\"out_errors\":${out_errors:-0},\"speed_mbps\":$speed}"
+        json="${json}\"$iface\":{\"name\":\"$iface\",\"friendly_name\":\"$friendly_name\",\"status\":\"$status\",\"ip_address\":$ip_addr,\"mac_address\":\"$mac_addr\",\"in_bytes\":$in_bytes,\"out_bytes\":$out_bytes,\"in_packets\":$in_packets,\"out_packets\":$out_packets,\"in_errors\":$in_errors,\"out_errors\":$out_errors,\"speed_mbps\":$speed}"
     done
 
     echo "${json}}"
 }
 
-# Collect services (warm data)
 collect_services() {
     local json="["
     local first=true
@@ -320,59 +330,53 @@ collect_dhcp_leases() {
 }
 
 # Collect ARP table (warm data)
+# Collect ARP table (warm data)
 collect_arp_table() {
     local json="["
     local first=true
-
-    arp -an 2>/dev/null | while read -r line; do
-        local ip=$(echo "$line" | grep -o '([^)]*)'  | tr -d '()')
-        local mac=$(echo "$line" | awk '{print $4}')
-        local iface=$(echo "$line" | awk '{print $NF}')
-
-        if [ -n "$ip" ] && [ -n "$mac" ] && [ "$mac" != "(incomplete)" ]; then
-            if [ "$first" = true ]; then
-                first=false
-                echo -n "{"
-            else
-                echo -n ",{"
-            fi
-            echo -n "\"ip\":\"$ip\",\"mac\":\"$mac\",\"interface\":\"$iface\",\"hostname\":null}"
+    
+    while IFS= read -r line; do
+        local ip=$(echo "$line" | grep -oE "\([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\)" | tr -d "()")
+        local mac=$(echo "$line" | awk "{print \$4}")
+        local iface=$(echo "$line" | awk "{print \$6}")
+        
+        # Skip incomplete or invalid entries
+        if [ -z "$ip" ] || [ -z "$mac" ] || [ "$mac" = "(incomplete)" ]; then
+            continue
         fi
-    done
-
-    # Wrap in array if empty
-    local result=$(arp -an 2>/dev/null | grep -v incomplete | head -50 | while read -r line; do
-        local ip=$(echo "$line" | grep -o '([^)]*)'  | tr -d '()')
-        local mac=$(echo "$line" | awk '{print $4}')
-        local iface=$(echo "$line" | awk '{print $NF}')
-
-        if [ -n "$ip" ] && [ -n "$mac" ]; then
-            echo "{\"ip\":\"$ip\",\"mac\":\"$mac\",\"interface\":\"$iface\",\"hostname\":null}"
+        
+        if [ "$first" = true ]; then
+            first=false
+        else
+            json="${json},"
         fi
-    done | paste -sd, -)
-
-    echo "[${result}]"
+        
+        json="${json}{\"ip\":\"$ip\",\"mac\":\"$mac\",\"interface\":\"[$iface]\",\"hostname\":null}"
+    done < <(arp -an 2>/dev/null | head -50)
+    
+    echo "${json}]"
 }
 
-# =============================================================================
-# PUSH FUNCTIONS
-# =============================================================================
-
-# Send push to relay
 send_push() {
     local payload="$1"
+    # Minify JSON to match what relay will see after JSON.stringify
+    local minified=$(echo "$payload" | jq -c . 2>/dev/null)
+    if [ -z "$minified" ]; then
+        log "Failed to minify payload - invalid JSON"
+        echo "{\"error\":\"invalid_json\"}"
+        return 1
+    fi
     local timestamp=$(date +%s)000
-    local signature=$(sign_payload "$payload" "$timestamp")
+    local signature=$(sign_payload "$minified" "$timestamp")
 
     curl -s -X POST "${RELAY_URL}/api/v2/push" \
         -H "Content-Type: application/json" \
         -H "X-Device-Token: ${DEVICE_TOKEN}" \
         -H "X-Timestamp: ${timestamp}" \
         -H "X-Signature: ${signature}" \
-        -d "$payload"
+        -d "$minified"
 }
 
-# Fetch manifest from relay
 fetch_manifest() {
     local response=$(curl -s -H "X-Device-Token: ${DEVICE_TOKEN}" "${RELAY_URL}/api/v2/manifest")
 
